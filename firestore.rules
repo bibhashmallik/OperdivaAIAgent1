@@ -1,0 +1,96 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if true;
+    }
+
+    // --- Global Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == "bibhashmallik@gmail.com" || 
+        request.auth.token.email == "bheshrahdhami@gmail.com" ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Entity Validations ---
+    function isValidUser(data) {
+      return (data.keys().hasAll(['name', 'email', 'plan']) || data.keys().hasAll(['plan']))
+        && data.keys().size() >= 1 && data.keys().size() <= 8
+        && (data.keys().hasAny(['name']) ? (data.name is string && data.name.size() > 0 && data.name.size() <= 100) : true)
+        && (data.keys().hasAny(['email']) ? (data.email is string && data.email.size() > 0 && data.email.size() <= 200) : true)
+        && (data.keys().hasAny(['plan']) ? (data.plan in ['None', 'Lite', 'Pro']) : true)
+        && (!data.keys().hasAny(['licenseKey']) || (data.licenseKey is string || data.licenseKey == null))
+        && (!data.keys().hasAny(['revenue']) || (data.revenue is number))
+        && (!data.keys().hasAny(['isAdmin']) || (data.isAdmin is bool));
+    }
+
+    function isValidSite(data) {
+      return data.keys().hasAll(['url', 'status', 'apiKey', 'createdAt'])
+        && data.keys().size() >= 4
+        && data.url is string
+        && data.status is string
+        && data.apiKey is string;
+    }
+
+    function isValidPromo(data) {
+      return data.keys().hasAll(['code', 'discount', 'createdAt'])
+        && data.keys().size() == 3
+        && data.code is string && data.code.size() > 0 && data.code.size() <= 20
+        && data.discount is number && data.discount >= 0 && data.discount <= 100
+        && data.createdAt == request.time;
+    }
+
+    // --- Resource Matches ---
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(incoming());
+      allow update: if (isOwner(userId) || isAdmin()) && (
+        isValidUser(incoming()) || 
+        (incoming().diff(existing()).affectedKeys().hasOnly(['plan', 'licenseKey']) && 
+         incoming().plan in ['Lite', 'Pro'] &&
+         (incoming().licenseKey is string || incoming().licenseKey == null))
+      );
+    }
+
+    match /users/{userId}/sites/{siteId} {
+      allow list: if isOwner(userId) || isAdmin();
+      allow get: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidSite(incoming()) && isValidId(siteId);
+      allow update: if isOwner(userId) && isValidSite(incoming());
+      allow delete: if isOwner(userId);
+    }
+
+    match /promos/{promoId} {
+      allow list, get: if isSignedIn();
+      allow create, update, delete: if isAdmin() && isValidPromo(incoming());
+    }
+
+    match /promoLogs/{logId} {
+      allow list, get: if isAdmin();
+      allow write: if false; // Only server should write logs
+    }
+  }
+}

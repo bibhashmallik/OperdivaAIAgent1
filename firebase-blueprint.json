@@ -1,0 +1,39 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Full name of the user" },
+        "email": { "type": "string", "description": "Email address of the user" },
+        "plan": { "type": "string", "enum": ["None", "Lite", "Pro"], "description": "Current subscription plan" }
+      },
+      "required": ["name", "email", "plan"]
+    },
+    "Site": {
+      "title": "Site",
+      "description": "Information about an optimized website",
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "description": "The domain of the site" },
+        "health": { "type": "number", "description": "Health score of the site" },
+        "status": { "type": "string", "description": "Current status of the site optimization" },
+        "lastSync": { "type": "string", "description": "Human readable last sync time" },
+        "apiKey": { "type": "string", "description": "Generated API key for the site" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the site was added" }
+      },
+      "required": ["url", "health", "status", "lastSync", "apiKey", "createdAt"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "User document mapped by Auth UID"
+    },
+    "users/{userId}/sites/{siteId}": {
+      "schema": "Site",
+      "description": "Sites connected to the user's account"
+    }
+  }
+}
