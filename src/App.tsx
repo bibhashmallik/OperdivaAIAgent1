@@ -288,7 +288,12 @@ const LoginPage = () => {
     }
     setIsLoading(true);
     try {
-      await sendPasswordResetEmail(auth, email);
+      const response = await fetch("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email })
+      });
+      if (!response.ok) throw new Error("Failed to send reset email");
       setIsResetEmailSent(true);
       setEmailError("");
     } catch (error: any) {
@@ -339,12 +344,12 @@ const LoginPage = () => {
         const result = await createUserWithEmailAndPassword(auth, email, password);
         const firebaseUser = result.user;
         
-        // Send verification email
-        const actionCodeSettings = {
-          url: window.location.origin,
-          handleCodeInApp: true,
-        };
-        await sendEmailVerification(firebaseUser, actionCodeSettings);
+        // Send custom verification email via backend
+        await fetch("/api/auth/verify-email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: firebaseUser.email })
+        });
         
         const newUser: AppUser = {
           name: name || "New User",
@@ -631,11 +636,12 @@ const ProfilePage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
     if (!auth.currentUser || isResending || resendCountdown > 0) return;
     setIsResending(true);
     try {
-      const actionCodeSettings = {
-        url: window.location.origin,
-        handleCodeInApp: true,
-      };
-      await sendEmailVerification(auth.currentUser, actionCodeSettings);
+      const response = await fetch("/api/auth/verify-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: auth.currentUser.email })
+      });
+      if (!response.ok) throw new Error("Failed to send verification email");
       alert("Verification email sent! Please check your inbox (and spam folder).");
       setResendCountdown(60); 
     } catch (error: any) {

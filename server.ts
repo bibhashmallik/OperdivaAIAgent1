@@ -3,20 +3,21 @@ import path from "path";
 import cors from "cors";
 import { initializeApp as initializeAdmin, getApps, applicationDefault } from "firebase-admin/app";
 import { getAuth as getAdminAuth } from "firebase-admin/auth";
+import nodemailer from "nodemailer";
 
 // Client SDK for Firestore (to bypass IAM issues)
 import { initializeApp as initializeClient } from "firebase/app";
-import { 
-  getFirestore, 
-  collection, 
-  doc, 
-  getDoc, 
-  getDocs, 
-  setDoc, 
-  updateDoc, 
-  addDoc, 
-  query, 
-  where, 
+import {
+  getFirestore,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  setDoc,
+  updateDoc,
+  addDoc,
+  query,
+  where,
   orderBy,
   serverTimestamp,
   deleteDoc
@@ -42,16 +43,27 @@ const db = getFirestore(clientApp, firebaseConfig.firestoreDatabaseId);
 
 // Startup check
 (async () => {
-    try {
-        const snap = await getDocs(query(collection(db, "promos"), where("code", "==", "OFF100")));
-        console.log(`SUCCESS: Client SDK connectivity verified. Promos found: ${snap.size}`);
-    } catch (e: any) {
-        console.error("CRITICAL: Client SDK Firestore check failed:", e.message);
-    }
+  try {
+    const snap = await getDocs(query(collection(db, "promos"), where("code", "==", "OFF100")));
+    console.log(`SUCCESS: Client SDK connectivity verified. Promos found: ${snap.size}`);
+  } catch (e: any) {
+    console.error("CRITICAL: Client SDK Firestore check failed:", e.message);
+  }
 })();
 
 console.log(`Firebase services initialized for project: ${firebaseConfig.projectId}`);
 console.log(`Firestore target: ${firebaseConfig.firestoreDatabaseId}`);
+
+// Setup Nodemailer Transporter (Update with your CyberPanel SMTP details)
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || "mail.wpaioptimizer.com",
+  port: parseInt(process.env.SMTP_PORT || "465"),
+  secure: true, // true for 465, false for other ports
+  auth: {
+    user: process.env.SMTP_USER || "noreply@wpaioptimizer.com",
+    pass: process.env.SMTP_PASS || "Cl45pD%DN2o%wnhE",
+  },
+});
 
 async function startServer() {
   const app = express();
@@ -63,7 +75,7 @@ async function startServer() {
   // PROTECTED DOWNLOAD ENDPOINT
   app.get("/api/download-plugin", async (req, res) => {
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({ success: false, message: "Unauthorized. Missing token." });
     }
@@ -153,7 +165,7 @@ async function startServer() {
       if (promoCode) {
         const promoQuery = query(collection(db, "promos"), where("code", "==", promoCode.toUpperCase()));
         const promoSnap = await getDocs(promoQuery);
-        
+
         if (!promoSnap.empty) {
           const promoData = promoSnap.docs[0].data();
           discount = promoData.discount || 0;
@@ -184,12 +196,12 @@ async function startServer() {
 
       const licenseKey = `AUTH-${planId.toUpperCase()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
       console.log(`[PAYMENT] Verification success for ${orderId}. Plan: ${planId}, Price: ${finalPrice}`);
-      
-      return res.json({ 
-        success: true, 
-        licenseKey, 
+
+      return res.json({
+        success: true,
+        licenseKey,
         finalPrice,
-        message: finalPrice === 0 ? "Free plan activated!" : "Payment verified successfully" 
+        message: finalPrice === 0 ? "Free plan activated!" : "Payment verified successfully"
       });
     } catch (error: any) {
       console.error("[PAYMENT] Verification error:", error);
@@ -204,19 +216,19 @@ async function startServer() {
 
     try {
       const cleanDomain = domain.replace(/^(?:https?:\/\/)?(?:www\.)?/i, "").split('/')[0].toLowerCase();
-      
+
       const usersSnap = await getDocs(collection(db, "users"));
       let recognizedUser = null;
 
       for (const userDoc of usersSnap.docs) {
         const sitesSnap = await getDocs(query(collection(db, "users", userDoc.id, "sites"), where("apiKey", "==", siteKey)));
         if (!sitesSnap.empty) {
-           const siteData = sitesSnap.docs[0].data();
-           const sDomain = siteData.url.replace(/^(?:https?:\/\/)?(?:www\.)?/i, "").split('/')[0].toLowerCase();
-           if (sDomain === cleanDomain) {
-             recognizedUser = userDoc.data();
-             break;
-           }
+          const siteData = sitesSnap.docs[0].data();
+          const sDomain = siteData.url.replace(/^(?:https?:\/\/)?(?:www\.)?/i, "").split('/')[0].toLowerCase();
+          if (sDomain === cleanDomain) {
+            recognizedUser = userDoc.data();
+            break;
+          }
         }
       }
 
@@ -225,6 +237,68 @@ async function startServer() {
       res.json({ success: true, plan: recognizedUser.plan });
     } catch (error) {
       res.status(500).json({ success: false });
+    }
+  });
+
+  // CUSTOM EMAIL AUTH ENDPOINTS
+  app.post("/api/auth/reset-password", async (req, res) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ success: false, message: "Email required" });
+
+    try {
+      // 1. Generate the raw Firebase password reset link
+      const resetLink = await adminAuth.generatePasswordResetLink(email);
+
+      // 2. Send the email using your CyberPanel SMTP
+      await transporter.sendMail({
+        from: '"WP AI Optimizer" <noreply@wpaioptimizer.com>',
+        to: email,
+        subject: "Reset your password for WP AI Optimizer",
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>Password Reset Request</h2>
+            <p>We received a request to reset your password for your WP AI Optimizer account.</p>
+            <p>Click the button below to choose a new password:</p>
+            <a href="${resetLink}" style="display: inline-block; padding: 12px 24px; background-color: #0ea5e9; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; margin: 16px 0;">Reset Password</a>
+            <p style="color: #666; font-size: 14px;">If you didn't request this, you can safely ignore this email.</p>
+          </div>
+        `
+      });
+
+      res.json({ success: true, message: "Password reset email sent successfully" });
+    } catch (error: any) {
+      console.error("Custom reset password error:", error);
+      res.status(500).json({ success: false, message: error.message || "Failed to send reset email" });
+    }
+  });
+
+  app.post("/api/auth/verify-email", async (req, res) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ success: false, message: "Email required" });
+
+    try {
+      // 1. Generate the raw Firebase email verification link
+      const verificationLink = await adminAuth.generateEmailVerificationLink(email);
+
+      // 2. Send the email using your CyberPanel SMTP
+      await transporter.sendMail({
+        from: '"WP AI Optimizer" <noreply@wpaioptimizer.com>',
+        to: email,
+        subject: "Verify your email for WP AI Optimizer",
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2>Verify Your Email</h2>
+            <p>Welcome to WP AI Optimizer! Please verify your email address to get started.</p>
+            <a href="${verificationLink}" style="display: inline-block; padding: 12px 24px; background-color: #0ea5e9; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; margin: 16px 0;">Verify Email</a>
+            <p style="color: #666; font-size: 14px;">If you didn't sign up for this account, you can safely ignore this email.</p>
+          </div>
+        `
+      });
+
+      res.json({ success: true, message: "Verification email sent successfully" });
+    } catch (error: any) {
+      console.error("Custom verify email error:", error);
+      res.status(500).json({ success: false, message: error.message || "Failed to send verification email" });
     }
   });
 
