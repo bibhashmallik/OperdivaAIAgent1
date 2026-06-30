@@ -1,7 +1,8 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import cors from "cors";
-import { initializeApp as initializeAdmin, getApps, applicationDefault } from "firebase-admin/app";
+import { initializeApp as initializeAdmin, getApps, cert } from "firebase-admin/app";
 import { getAuth as getAdminAuth } from "firebase-admin/auth";
 import nodemailer from "nodemailer";
 
@@ -28,10 +29,20 @@ import firebaseConfig from "./firebase-applet-config.json" assert { type: "json"
 
 // Initialize Firebase Admin (for Auth ONLY)
 if (getApps().length === 0) {
-  initializeAdmin({
-    projectId: firebaseConfig.projectId,
-    credential: applicationDefault()
-  });
+  let credential = undefined;
+  const keyPath = path.join(process.cwd(), "serviceAccountKey.json.json");
+  
+  if (fs.existsSync(keyPath)) {
+    const serviceAccount = JSON.parse(fs.readFileSync(keyPath, "utf8"));
+    credential = cert(serviceAccount);
+  } else {
+    // Fallback if key is missing (e.g. forgot to upload to server)
+    console.error("CRITICAL: serviceAccountKey.json.json not found! Custom emails will fail.");
+  }
+
+  if (credential) {
+    initializeAdmin({ credential });
+  }
 }
 
 const adminApp = getApps()[0];

@@ -24,6 +24,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 // server.ts
 var import_express = __toESM(require("express"), 1);
 var import_path = __toESM(require("path"), 1);
+var import_fs = __toESM(require("fs"), 1);
 var import_cors = __toESM(require("cors"), 1);
 var import_app = require("firebase-admin/app");
 var import_auth = require("firebase-admin/auth");
@@ -45,10 +46,17 @@ var firebase_applet_config_default = {
 
 // server.ts
 if ((0, import_app.getApps)().length === 0) {
-  (0, import_app.initializeApp)({
-    projectId: firebase_applet_config_default.projectId,
-    credential: (0, import_app.applicationDefault)()
-  });
+  let credential = void 0;
+  const keyPath = import_path.default.join(process.cwd(), "serviceAccountKey.json.json");
+  if (import_fs.default.existsSync(keyPath)) {
+    const serviceAccount = JSON.parse(import_fs.default.readFileSync(keyPath, "utf8"));
+    credential = (0, import_app.cert)(serviceAccount);
+  } else {
+    console.error("CRITICAL: serviceAccountKey.json.json not found! Custom emails will fail.");
+  }
+  if (credential) {
+    (0, import_app.initializeApp)({ credential });
+  }
 }
 var adminApp = (0, import_app.getApps)()[0];
 var adminAuth = (0, import_auth.getAuth)(adminApp);
