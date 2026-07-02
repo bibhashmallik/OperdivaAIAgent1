@@ -2,8 +2,7 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import cors from "cors";
-import { initializeApp as initializeAdmin, getApps, cert } from "firebase-admin/app";
-import { getAuth as getAdminAuth } from "firebase-admin/auth";
+import admin from "firebase-admin";
 import nodemailer from "nodemailer";
 
 // Client SDK for Firestore (to bypass IAM issues)
@@ -28,25 +27,24 @@ import {
 import firebaseConfig from "./firebase-applet-config.json" assert { type: "json" };
 
 // Initialize Firebase Admin (for Auth ONLY)
-if (getApps().length === 0) {
+if (admin.apps.length === 0) {
   let credential = undefined;
   const keyPath = path.join(process.cwd(), "serviceAccountKey.json.json");
   
   if (fs.existsSync(keyPath)) {
     const serviceAccount = JSON.parse(fs.readFileSync(keyPath, "utf8"));
-    credential = cert(serviceAccount);
+    credential = admin.credential.cert(serviceAccount);
   } else {
     // Fallback if key is missing (e.g. forgot to upload to server)
     console.error("CRITICAL: serviceAccountKey.json.json not found! Custom emails will fail.");
   }
 
   if (credential) {
-    initializeAdmin({ credential });
+    admin.initializeApp({ credential });
   }
 }
 
-const adminApp = getApps()[0];
-const adminAuth = getAdminAuth(adminApp);
+const adminAuth = admin.auth();
 
 // Initialize Client SDK for Firestore
 const clientApp = initializeClient(firebaseConfig);
