@@ -5,6 +5,7 @@ import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
 import 'dotenv/config'; // Make sure to load env vars
 import nodemailer from "nodemailer";
+import WebSocket from "ws";
 
 // Initialize Supabase Admin (Service Role) for backend operations
 const supabaseUrl = process.env.VITE_SUPABASE_URL || "https://placeholder-project.supabase.co";
@@ -14,6 +15,9 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey, {
   auth: {
     autoRefreshToken: false,
     persistSession: false
+  },
+  realtime: {
+    transport: WebSocket
   }
 });
 
