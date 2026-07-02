@@ -1,5 +1,5 @@
 {
-  "name": "OperDiva - Make Your WordPress Site AI-Ready",
+  "name": "WP AI Optimizer - Make Your WordPress Site AI-Ready",
   "description": "The essential WordPress plugin to optimize your website content for AI agents, LLMs, and future search engines.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

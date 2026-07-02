@@ -59,43 +59,16 @@ import {
   Pie, 
   Cell 
 } from "recharts";
-import { 
-  onAuthStateChanged, 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
-  signOut,
-  signInWithPopup,
-  sendPasswordResetEmail,
-  sendEmailVerification,
-  User as FirebaseUser
-} from "firebase/auth";
-import { 
-  doc, 
-  getDoc, 
-  setDoc, 
-  collection, 
-  onSnapshot, 
-  query, 
-  orderBy, 
-  serverTimestamp,
-  deleteDoc,
-  getDocFromServer,
-  getDocs,
-  where,
-  addDoc,
-  updateDoc
-} from "firebase/firestore";
-import { auth, db, googleProvider, handleFirestoreError, OperationType } from "./firebase";
-import { QRCodeSVG } from "qrcode.react";
+import type { User as SupabaseUser } from "@supabase/supabase-js";
+import { supabase, handleSupabaseError, OperationType } from "./supabase";
 
-// CRITICAL: Validate Connection to Firestore
+// CRITICAL: Validate Connection to Supabase
 async function testConnection() {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if(error instanceof Error && (error.message.includes('the client is offline') || error.message.includes('permission-denied'))) {
-      console.error("Firebase connection test failed. This is expected if the first read triggers permission denied before auth.");
-    }
+    const { error } = await supabase.from('test').select('*').limit(1);
+    if (error) throw error;
+  } catch (error: any) {
+    console.error("Supabase connection test failed. This is expected if the table doesn't exist yet.");
   }
 }
 testConnection();
@@ -148,7 +121,7 @@ const Navbar = ({ isLoggedIn, user }: { isLoggedIn: boolean, user: AppUser | nul
           <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-brand-primary to-brand-secondary flex items-center justify-center text-white shadow-lg group-hover:rotate-12 transition-transform">
             <Bot size={24} />
           </div>
-          <span className="text-xl font-display font-bold tracking-tight">Oper<span className="glow-text">Diva</span></span>
+          <span className="text-xl font-display font-bold tracking-tight">WP AI <span className="glow-text">Optimizer</span></span>
         </Link>
 
         {/* Desktop Menu */}
@@ -271,99 +244,80 @@ const Navbar = ({ isLoggedIn, user }: { isLoggedIn: boolean, user: AppUser | nul
 };
 
 const LoginPage = () => {
-  const [isLogin, setIsLogin] = useState(true);
+  const [step, setStep] = useState<"email" | "password">("email");
   const [isLoading, setIsLoading] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
   const [emailError, setEmailError] = useState("");
-  const [isResetEmailSent, setIsResetEmailSent] = useState(false);
+  const [message, setMessage] = useState("");
   const navigate = useNavigate();
-
-  const handleForgotPassword = async () => {
-    if (!email) {
-      setEmailError("Please enter your email to reset your password.");
-      return;
-    }
-    setIsLoading(true);
-    try {
-      const response = await fetch("/api/auth/reset-password", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email })
-      });
-      if (!response.ok) throw new Error("Failed to send reset email");
-      setIsResetEmailSent(true);
-      setEmailError("");
-    } catch (error: any) {
-      console.error("Reset password error:", error);
-      setEmailError(error.message || "Failed to send reset email.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const handleGoogleLogin = async () => {
     setIsLoading(true);
     setEmailError("");
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      const firebaseUser = result.user;
-      
-      const userRef = doc(db, "users", firebaseUser.uid);
-      const userDoc = await getDoc(userRef);
-      
-      if (!userDoc.exists()) {
-        const newUser: AppUser = {
-          name: firebaseUser.displayName || "Google User",
-          email: firebaseUser.email || "",
-          plan: "None"
-        };
-        await setDoc(userRef, newUser);
-      }
-      setIsSuccess(true);
-      setTimeout(() => navigate("/profile"), 1500);
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+      });
+      if (error) throw error;
+      // Note: Google OAuth redirects, no need to navigate here
     } catch (error: any) {
       console.error("Google login error:", error);
-      setEmailError(error.message || "Google login failed.");
+      let msg = error?.message || "Google login failed.";
+      if (msg === "{}" || typeof msg === "object") msg = "Google login failed. Please try again.";
+      setEmailError(msg);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setEmailError("");
+  const handleRequestPassword = async (e?: FormEvent) => {
+    if (e) e.preventDefault();
+    if (!email) {
+      setEmailError("Please enter your email.");
+      return;
+    }
     setIsLoading(true);
-
+    setEmailError("");
+    setMessage("");
     try {
-      if (isLogin) {
-        await signInWithEmailAndPassword(auth, email, password);
-      } else {
-        const result = await createUserWithEmailAndPassword(auth, email, password);
-        const firebaseUser = result.user;
-        
-        // Send custom verification email via backend
-        await fetch("/api/auth/verify-email", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: firebaseUser.email })
-        });
-        
-        const newUser: AppUser = {
-          name: name || "New User",
-          email: email,
-          plan: "None"
-        };
-        await setDoc(doc(db, "users", firebaseUser.uid), newUser);
+      const response = await fetch("/api/auth/request-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email })
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Failed to send password.");
       }
+      setStep("password");
+      setMessage("A temporary password has been sent to your email address.");
+    } catch (error: any) {
+      console.error("Request password error:", error);
+      setEmailError(error.message || "Failed to request password. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleVerifyPassword = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!password) {
+      setEmailError("Please enter the password received in your email.");
+      return;
+    }
+    setIsLoading(true);
+    setEmailError("");
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
       
       setIsSuccess(true);
       setTimeout(() => navigate("/profile"), 1500);
     } catch (error: any) {
-      console.error("Auth error:", error);
-      setEmailError(error.message || "Authentication failed.");
+      console.error("Login error:", error);
+      setEmailError(error.message || "Invalid password or login failed.");
     } finally {
       setIsLoading(false);
     }
@@ -399,7 +353,7 @@ const LoginPage = () => {
             </div>
             <h2 className="text-3xl font-display font-bold mb-2">Success!</h2>
             <p className="text-slate-400">
-              {isLogin ? "Welcome back to OperDiva." : "Your account has been created."}
+              Welcome back to WP AI Optimizer.
             </p>
             <p className="text-slate-500 text-xs mt-4">Redirecting you to dashboard...</p>
           </motion.div>
@@ -407,139 +361,154 @@ const LoginPage = () => {
           <>
             <div className="text-center mb-8">
               <h2 className="text-3xl font-display font-bold mb-2">
-                {isLogin ? "Welcome Back" : "Create Account"}
+                {step === "email" ? "Sign In / Sign Up" : "Enter Password"}
               </h2>
               <p className="text-slate-400 text-sm">
-                {isLogin 
-                  ? "Login to manage your AI-ready WordPress sites" 
-                  : "Get started with OperDiva and optimize for agents"}
+                {step === "email" 
+                  ? "Enter your email to receive a temporary password via SMTP" 
+                  : `Enter the temporary password sent to ${email}`}
               </p>
             </div>
 
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {!isLogin && (
+            {message && (
+              <div className="mb-6 p-4 rounded-xl bg-green-500/10 border border-green-500/20 text-green-400 text-sm">
+                {message}
+              </div>
+            )}
+
+            {step === "email" ? (
+              <form onSubmit={handleRequestPassword} className="space-y-4">
                 <div className="space-y-1">
-                  <label className="text-xs font-bold uppercase tracking-widest text-slate-500 ml-1">Full Name</label>
+                  <label className="text-xs font-bold uppercase tracking-widest text-slate-500 ml-1">Email Address</label>
                   <div className="relative">
                     <input 
-                      type="text" 
+                      type="email" 
                       required
-                      placeholder="John Doe"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-brand-primary transition-colors pl-11"
+                      placeholder="name@company.com"
+                      value={email}
+                      onChange={(e) => {
+                        setEmail(e.target.value);
+                        if (emailError) setEmailError("");
+                      }}
+                      className={`w-full bg-slate-900 border ${emailError ? "border-red-500" : "border-slate-800"} rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-brand-primary transition-colors pl-11`}
                     />
-                    <Bot className="absolute left-4 top-3.5 text-slate-600" size={18} />
+                    <Mail className={`absolute left-4 top-3.5 ${emailError ? "text-red-500" : "text-slate-600"}`} size={18} />
                   </div>
-                </div>
-              )}
-              
-              <div className="space-y-1">
-                <label className="text-xs font-bold uppercase tracking-widest text-slate-500 ml-1">Email Address</label>
-                <div className="relative">
-                  <input 
-                    type="email" 
-                    required
-                    placeholder="name@company.com"
-                    value={email}
-                    onChange={(e) => {
-                      setEmail(e.target.value);
-                      if (emailError) setEmailError("");
-                    }}
-                    className={`w-full bg-slate-900 border ${emailError ? "border-red-500" : "border-slate-800"} rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-brand-primary transition-colors pl-11`}
-                  />
-                  <Mail className={`absolute left-4 top-3.5 ${emailError ? "text-red-500" : "text-slate-600"}`} size={18} />
-                </div>
-                {emailError && (
-                  <motion.p 
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="text-[10px] font-bold text-red-500 mt-1 ml-1 uppercase tracking-wider"
-                  >
-                    {emailError}
-                  </motion.p>
-                )}
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-bold uppercase tracking-widest text-slate-500 ml-1">Password</label>
-                <div className="relative">
-                  <input 
-                    type="password" 
-                    required
-                    placeholder="••••••••"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-brand-primary transition-colors pl-11"
-                  />
-                  <Lock className="absolute left-4 top-3.5 text-slate-600" size={18} />
-                </div>
-              </div>
-
-              {isLogin && (
-                <div className="text-right">
-                  {isResetEmailSent ? (
-                    <span className="text-[10px] font-bold text-green-500 uppercase tracking-wider">Reset email sent!</span>
-                  ) : (
-                    <button 
-                      type="button" 
-                      onClick={handleForgotPassword}
-                      className="text-xs font-bold text-brand-primary hover:underline disabled:opacity-50"
-                      disabled={isLoading}
+                  {emailError && (
+                    <motion.p 
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="text-[10px] font-bold text-red-500 mt-1 ml-1 uppercase tracking-wider"
                     >
-                      Forgot password?
-                    </button>
+                      {emailError}
+                    </motion.p>
                   )}
                 </div>
-              )}
 
-              <button 
-                type="submit"
-                disabled={isLoading}
-                className="w-full py-4 rounded-xl bg-gradient-to-r from-brand-primary to-brand-secondary font-bold shadow-lg hover:shadow-[0_0_20px_rgba(14,165,233,0.3)] disabled:opacity-50 disabled:cursor-not-allowed transition-all mt-4 flex items-center justify-center gap-2"
-              >
-                {isLoading ? (
-                  <>
-                    <Loader2 size={20} className="animate-spin" />
-                    Processing...
-                  </>
-                ) : (
-                  isLogin ? "Login Now" : "Create Account"
-                )}
-              </button>
+                <button 
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full py-4 rounded-xl bg-gradient-to-r from-brand-primary to-brand-secondary font-bold shadow-lg hover:shadow-[0_0_20px_rgba(14,165,233,0.3)] disabled:opacity-50 disabled:cursor-not-allowed transition-all mt-4 flex items-center justify-center gap-2"
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 size={20} className="animate-spin" />
+                      Sending Password...
+                    </>
+                  ) : (
+                    "Send Temporary Password"
+                  )}
+                </button>
 
-              <div className="relative py-4">
-                <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-800"></div></div>
-                <div className="relative flex justify-center text-xs uppercase font-bold tracking-widest"><span className="bg-[#0b1121] px-4 text-slate-600">Or continue with</span></div>
-              </div>
+                <div className="relative py-4">
+                  <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-800"></div></div>
+                  <div className="relative flex justify-center text-xs uppercase font-bold tracking-widest"><span className="bg-[#0b1121] px-4 text-slate-600">Or continue with</span></div>
+                </div>
 
-              <button 
-                type="button" 
-                onClick={handleGoogleLogin}
-                className="w-full py-3.5 rounded-xl bg-slate-900 border border-slate-800 font-bold text-sm flex items-center justify-center gap-2 hover:bg-slate-800 transition-colors"
-                disabled={isLoading}
-              >
-                <Globe size={18} />
-                Google
-              </button>
-            </form>
+                <button 
+                  type="button" 
+                  onClick={handleGoogleLogin}
+                  className="w-full py-3.5 rounded-xl bg-slate-900 border border-slate-800 font-bold text-sm flex items-center justify-center gap-2 hover:bg-slate-800 transition-colors"
+                  disabled={isLoading}
+                >
+                  <Globe size={18} />
+                  Google
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleVerifyPassword} className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold uppercase tracking-widest text-slate-500 ml-1">Temporary Password</label>
+                  <div className="relative">
+                    <input 
+                      type="password" 
+                      required
+                      placeholder="••••••••"
+                      value={password}
+                      onChange={(e) => {
+                        setPassword(e.target.value);
+                        if (emailError) setEmailError("");
+                      }}
+                      className={`w-full bg-slate-900 border ${emailError ? "border-red-500" : "border-slate-800"} rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-brand-primary transition-colors pl-11`}
+                    />
+                    <Lock className={`absolute left-4 top-3.5 ${emailError ? "text-red-500" : "text-slate-600"}`} size={18} />
+                  </div>
+                  {emailError && (
+                    <motion.p 
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="text-[10px] font-bold text-red-500 mt-1 ml-1 uppercase tracking-wider"
+                    >
+                      {emailError}
+                    </motion.p>
+                  )}
+                </div>
 
-            <div className="mt-8 text-center text-sm text-slate-500">
-              {isLogin ? "Don't have an account?" : "Already have an account?"}{" "}
-              <button 
-                type="button"
-                onClick={() => setIsLogin(!isLogin)}
-                className="text-brand-primary font-bold hover:underline"
-              >
-                {isLogin ? "Sign up" : "Login"}
-              </button>
-            </div>
+                <button 
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full py-4 rounded-xl bg-gradient-to-r from-brand-primary to-brand-secondary font-bold shadow-lg hover:shadow-[0_0_20px_rgba(14,165,233,0.3)] disabled:opacity-50 disabled:cursor-not-allowed transition-all mt-4 flex items-center justify-center gap-2"
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 size={20} className="animate-spin" />
+                      Verifying...
+                    </>
+                  ) : (
+                    "Verify & Login"
+                  )}
+                </button>
+
+                <div className="flex justify-between items-center mt-6">
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      setStep("email");
+                      setEmailError("");
+                      setMessage("");
+                    }}
+                    className="text-xs font-bold text-slate-400 hover:text-white transition-colors"
+                  >
+                    ← Change Email
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => handleRequestPassword()}
+                    disabled={isLoading}
+                    className="text-xs font-bold text-brand-primary hover:underline disabled:opacity-50"
+                  >
+                    Resend Password
+                  </button>
+                </div>
+              </form>
+            )}
           </>
         )}
       </motion.div>
     </div>
   );
 };
+
 
 const ProfilePage = ({ user, setUser }: { user: AppUser | null, setUser: (user: AppUser) => void }) => {
   const navigate = useNavigate();
@@ -552,25 +521,37 @@ const ProfilePage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
   const [sites, setSites] = useState<Site[]>([]);
 
   useEffect(() => {
-    if (!auth.currentUser) return;
+    let isMounted = true;
     
-    const sitesPath = `users/${auth.currentUser.uid}/sites`;
-    const sitesQuery = query(
-      collection(db, "users", auth.currentUser.uid, "sites"),
-      orderBy("createdAt", "desc")
-    );
+    const fetchSites = async () => {
+      const { data: authData } = await supabase.auth.getUser();
+      if (!authData.user) return;
+      
+      const { data, error } = await supabase
+        .from('sites')
+        .select('*')
+        .eq('user_id', authData.user.id)
+        .order('createdAt', { ascending: false });
+        
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'sites');
+      } else if (data && isMounted) {
+        setSites(data as Site[]);
+      }
+    };
+
+    fetchSites();
     
-    const unsubscribe = onSnapshot(sitesQuery, (snapshot) => {
-      const sitesData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Site[];
-      setSites(sitesData);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, sitesPath);
-    });
-    
-    return () => unsubscribe();
+    const channel = supabase.channel('public:sites')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sites' }, () => {
+        fetchSites();
+      })
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const [isAddingSite, setIsAddingSite] = useState(false);
@@ -583,10 +564,11 @@ const ProfilePage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
   const [isDownloading, setIsDownloading] = useState(false);
 
   const handleDownload = async () => {
-    if (!auth.currentUser) return;
+    const { data: authData } = await supabase.auth.getSession();
+    if (!authData.session) return;
     setIsDownloading(true);
     try {
-      const idToken = await auth.currentUser.getIdToken();
+      const idToken = authData.session.access_token;
       const response = await fetch("/api/download-plugin", {
         headers: {
           "Authorization": `Bearer ${idToken}`
@@ -598,9 +580,7 @@ const ProfilePage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
         try {
           const errorData = await response.json();
           errorMsg = errorData.message || errorMsg;
-        } catch (e) {
-          // Response might not be JSON if it's a 4xx error from nginx/express
-        }
+        } catch (e) {}
         throw new Error(errorMsg);
       }
 
@@ -633,20 +613,20 @@ const ProfilePage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
   }, [resendCountdown]);
 
   const handleResendVerification = async () => {
-    if (!auth.currentUser || isResending || resendCountdown > 0) return;
+    const { data: authData } = await supabase.auth.getUser();
+    if (!authData.user || isResending || resendCountdown > 0) return;
     setIsResending(true);
     try {
-      const response = await fetch("/api/auth/verify-email", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: auth.currentUser.email })
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email: authData.user.email || '',
       });
-      if (!response.ok) throw new Error("Failed to send verification email");
+      if (error) throw error;
       alert("Verification email sent! Please check your inbox (and spam folder).");
       setResendCountdown(60); 
     } catch (error: any) {
       console.error("Resend verification error:", error);
-      if (error.code === 'auth/too-many-requests') {
+      if (error.status === 429) {
         alert("Too many requests. Please wait a few minutes before trying again.");
         setResendCountdown(180); // Disable for 3 minutes on throttle
       } else {
@@ -660,14 +640,15 @@ const ProfilePage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
   const plan = user?.plan || "None";
   
   const setPlan = async (newPlan: Plan) => {
-    if (auth.currentUser && user) {
-      const userRef = doc(db, "users", auth.currentUser.uid);
+    const { data: authData } = await supabase.auth.getUser();
+    if (authData.user && user) {
       try {
-        await updateDoc(userRef, { plan: newPlan });
+        const { error } = await supabase.from("users").update({ plan: newPlan }).eq("id", authData.user.id);
+        if (error) throw error;
         setUser({ ...user, plan: newPlan });
         alert(`Plan updated to ${newPlan} successfully.`);
       } catch (error) {
-        handleFirestoreError(error, OperationType.UPDATE, `users/${auth.currentUser.uid}`);
+        handleSupabaseError(error, OperationType.UPDATE, `users/${authData.user.id}`);
       }
     }
   };
@@ -677,26 +658,32 @@ const ProfilePage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
   const usagePercentage = sitesTotal > 0 ? (sitesUsed / sitesTotal) * 100 : 0;
 
   const handleUpdateEmail = async () => {
-    if (!auth.currentUser || !user) return;
-    const userRef = doc(db, "users", auth.currentUser.uid);
+    const { data: authData } = await supabase.auth.getUser();
+    if (!authData.user || !user) return;
     try {
+      const { error: authError } = await supabase.auth.updateUser({ email: newEmail });
+      if (authError) throw authError;
+
       const updatedUser = { ...user, email: newEmail };
-      await setDoc(userRef, updatedUser);
+      const { error: dbError } = await supabase.from("users").update({ email: newEmail }).eq("id", authData.user.id);
+      if (dbError) throw dbError;
+
       setEmail(newEmail);
       setUser(updatedUser);
       setIsEditingEmail(false);
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `users/${auth.currentUser.uid}`);
+      handleSupabaseError(error, OperationType.UPDATE, `users/${authData.user.id}`);
     }
   };
 
   const handleRemoveSite = async (siteId: string) => {
-    if (!auth.currentUser) return;
-    const sitePath = `users/${auth.currentUser.uid}/sites/${siteId}`;
+    const { data: authData } = await supabase.auth.getUser();
+    if (!authData.user) return;
     try {
-      await deleteDoc(doc(db, "users", auth.currentUser.uid, "sites", siteId));
+      const { error } = await supabase.from("sites").delete().eq("id", siteId).eq("user_id", authData.user.id);
+      if (error) throw error;
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, sitePath);
+      handleSupabaseError(error, OperationType.DELETE, `sites/${siteId}`);
     }
   };
 
@@ -723,7 +710,7 @@ const ProfilePage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      await supabase.auth.signOut();
       navigate("/auth");
     } catch (error) {
       console.error("Logout error:", error);
@@ -732,7 +719,8 @@ const ProfilePage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
 
   const handleAddSite = async (e: FormEvent) => {
     e.preventDefault();
-    if (!newSiteUrl || !auth.currentUser) return;
+    const { data: authData } = await supabase.auth.getUser();
+    if (!newSiteUrl || !authData.user) return;
     
     if (sitesUsed >= sitesTotal) {
       alert("Plan limit reached. Please upgrade your plan.");
@@ -741,22 +729,22 @@ const ProfilePage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
 
     const newKey = generateKey();
     const siteData = {
+      user_id: authData.user.id,
       url: newSiteUrl.replace(/(^\w+:|^)\/\//, "").replace(/\/$/, ""),
       health: 100,
       status: "active",
       lastSync: "Just now",
-      apiKey: newKey,
-      createdAt: serverTimestamp()
+      apiKey: newKey
     };
 
-    const sitesCollectionRef = collection(db, "users", auth.currentUser.uid, "sites");
     try {
-      await setDoc(doc(sitesCollectionRef), siteData);
+      const { error } = await supabase.from("sites").insert(siteData);
+      if (error) throw error;
       setGeneratedKey(newKey);
       setNewSiteUrl("");
       setIsAddingSite(false);
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `users/${auth.currentUser.uid}/sites`);
+      handleSupabaseError(error, OperationType.CREATE, `sites`);
     }
   };
 
@@ -890,25 +878,9 @@ const ProfilePage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
                   <h3 className="text-xl font-bold">{user?.name || "John Doe"}</h3>
                   <div className="flex items-center gap-2">
                     <p className="text-slate-500 text-sm">{email}</p>
-                    {auth.currentUser?.emailVerified ? (
-                      <span className="flex items-center gap-1 text-[10px] font-bold text-green-500 bg-green-500/10 px-2 py-0.5 rounded-full uppercase tracking-widest">
-                        <ShieldCheck size={10} /> Verified
-                      </span>
-                    ) : (
-                      <button 
-                        onClick={handleResendVerification}
-                        disabled={isResending || resendCountdown > 0}
-                        className="flex items-center gap-1 text-[10px] font-bold text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded-full uppercase tracking-widest hover:bg-amber-500/20 transition-colors disabled:opacity-50"
-                      >
-                        {isResending ? (
-                          <span className="flex items-center gap-1"><Loader2 size={10} className="animate-spin" /> Sending...</span>
-                        ) : resendCountdown > 0 ? (
-                          `Wait ${resendCountdown}s`
-                        ) : (
-                          "Unverified (Resend)"
-                        )}
-                      </button>
-                    )}
+                    <span className="flex items-center gap-1 text-[10px] font-bold text-green-500 bg-green-500/10 px-2 py-0.5 rounded-full uppercase tracking-widest">
+                      <ShieldCheck size={10} /> Verified
+                    </span>
                   </div>
                 </div>
               </div>
@@ -1254,7 +1226,7 @@ const VideoSection = () => {
             <span>System Transmission Node</span>
           </motion.div>
           <h2 className="text-5xl md:text-7xl font-display font-bold mb-8 tracking-tighter text-white">
-            OperDiva <span className="text-brand-primary/80">In-Situ</span>
+            WP AI Optimizer <span className="text-brand-primary/80">In-Situ</span>
           </h2>
           <p className="text-slate-400 max-w-2xl mx-auto text-xl font-light leading-relaxed">
             Witness the proprietary engine as it maps, optimizes, and broadcasts your site architecture to the agentic web.
@@ -1432,16 +1404,16 @@ const VideoSection = () => {
 const FAQSection = () => {
   const faqs = [
     {
-      q: "How does OperDiva actually work?",
-      a: "OperDiva scans your WordPress content and automatically injects advanced Schema.org JSON-LD and LLM-ready metadata. It restructures your site's data layer to ensure AI agents can parse your content without the 'noise' of traditional HTML."
+      q: "How does WP AI Optimizer actually work?",
+      a: "WP AI Optimizer scans your WordPress content and automatically injects advanced Schema.org JSON-LD and LLM-ready metadata. It restructures your site's data layer to ensure AI agents can parse your content without the 'noise' of traditional HTML."
     },
     {
       q: "Will this replace my existing SEO plugin?",
-      a: "No, it works alongside plugins like Yoast or RankMath. While those focus on human searchers (Google/Bing), OperDiva focuses on the 'Agentic Web'—LLMs, data miners, and AI assistants."
+      a: "No, it works alongside plugins like Yoast or RankMath. While those focus on human searchers (Google/Bing), WP AI Optimizer focuses on the 'Agentic Web'—LLMs, data miners, and AI assistants."
     },
     {
       q: "Does it slow down my website?",
-      a: "Quite the opposite. OperDiva is built for performance. It uses a lightweight caching layer and only serves extra metadata to verified AI agent crawlers, having zero impact on your core user experience."
+      a: "Quite the opposite. WP AI Optimizer is built for performance. It uses a lightweight caching layer and only serves extra metadata to verified AI agent crawlers, having zero impact on your core user experience."
     },
     {
       q: "Which AI agents are currently supported?",
@@ -1519,7 +1491,7 @@ const ComparisonSection = () => {
             The <span className="glow-text">AI Visibility</span> Gap
           </motion.h2>
           <p className="text-slate-400 max-w-2xl mx-auto">
-            Traditional SEO focuses on humans. OperDiva ensures search agents, data miners, and LLMs understand your content with 100% precision.
+            Traditional SEO focuses on humans. WP AI Optimizer ensures search agents, data miners, and LLMs understand your content with 100% precision.
           </p>
         </div>
 
@@ -1556,7 +1528,7 @@ const ComparisonSection = () => {
             </div>
             <div className="flex items-center gap-3 mb-6">
               <div className="w-2 h-2 rounded-full bg-brand-primary animate-ping" />
-              <span className="text-xs uppercase font-bold tracking-widest text-brand-primary">OperDiva Optimized</span>
+              <span className="text-xs uppercase font-bold tracking-widest text-brand-primary">WP AI Optimizer Optimized</span>
             </div>
             <h4 className="text-xl font-bold mb-4">The Agent-Readable Surface:</h4>
             <ul className="space-y-4">
@@ -1625,7 +1597,7 @@ const LandingPage = () => {
             transition={{ delay: 0.2 }}
             className="text-slate-400 text-lg md:text-xl max-w-2xl mx-auto mb-10 leading-relaxed"
           >
-            OperDiva is the essential WordPress plugin that ensures your website content is fully readable, indexable, and trusted by AI agents like Gemini, Claude, and GPT-Bot.
+            WP AI Optimizer is the essential WordPress plugin that ensures your website content is fully readable, indexable, and trusted by AI agents like Gemini, Claude, and GPT-Bot.
           </motion.p>
 
           <motion.div
@@ -1723,7 +1695,7 @@ const LandingPage = () => {
               {
                 step: "01",
                 title: "Install & Sync",
-                desc: "One-click installation on any WordPress site. OperDiva instantly maps your content structure.",
+                desc: "One-click installation on any WordPress site. WP AI Optimizer instantly maps your content structure.",
                 icon: Layers
               },
               {
@@ -1822,13 +1794,12 @@ const LandingPage = () => {
       <section id="pricing" className="pt-12 pb-6 px-6 bg-slate-900/30 border-t border-white/5">
         <div className="max-w-7xl mx-auto text-center">
           <h2 className="text-3xl md:text-5xl font-display font-bold mb-20 text-center">Simple Pricing for <span className="glow-text">Smart Content</span></h2>
-          
           <div className="grid md:grid-cols-3 gap-12 md:gap-8 pt-8">
             <div className="p-8 rounded-3xl bg-slate-900/50 border border-slate-800 flex flex-col items-center">
               <span className="text-slate-400 font-bold mb-4">Lite</span>
-              <div className="text-4xl font-display font-bold mb-8">$10<span className="text-xl text-slate-500">/site</span></div>
+              <div className="text-4xl font-display font-bold mb-8">$10<span className="text-xl text-slate-500">/bundle</span></div>
               <ul className="text-slate-400 space-y-4 mb-10 text-sm">
-                <li>1 Website License</li>
+                <li>3 Website Licenses</li>
                 <li>Basic Schema Markup</li>
                 <li>Standard Meta Directives</li>
                 <li>Core Optimization</li>
@@ -1839,7 +1810,7 @@ const LandingPage = () => {
             <div className="p-10 rounded-3xl glass border-brand-primary/50 flex flex-col items-center relative scale-110 shadow-2xl z-20">
               <div className="absolute -top-4 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full bg-brand-primary text-white text-[10px] font-bold uppercase tracking-widest">Growth Plan</div>
               <span className="text-brand-primary font-bold mb-4">Pro</span>
-              <div className="text-5xl font-display font-bold mb-8">$50<span className="text-xl text-slate-500">/bundle</span></div>
+              <div className="text-5xl font-display font-bold mb-8">$25<span className="text-xl text-slate-500">/bundle</span></div>
               <ul className="text-slate-200 space-y-4 mb-10 text-sm">
                 <li className="flex items-center gap-2"><CheckCircle2 size={14} className="text-brand-primary" /> 10 Websites Simultaneously</li>
                 <li className="flex items-center gap-2"><CheckCircle2 size={14} className="text-brand-primary" /> Advanced JSON-LD Generation</li>
@@ -1858,7 +1829,7 @@ const LandingPage = () => {
                 <li>White-labeled Interface</li>
                 <li>SLA & Dedicated Account</li>
               </ul>
-              <button onClick={() => navigate("/billing")} className="mt-auto w-full py-4 rounded-xl border border-slate-800 font-bold hover:bg-slate-800 transition-colors">Contact Sales</button>
+              <button onClick={() => navigate("/contact")} className="mt-auto w-full py-4 rounded-xl border border-slate-800 font-bold hover:bg-slate-800 transition-colors">Contact Sales</button>
             </div>
           </div>
 
@@ -1875,7 +1846,7 @@ const LandingPage = () => {
             Stop worrying about human-only SEO. Make your WordPress site the primary knowledge hub for the next trillion queries.
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-             <a href="#pricing" className="w-full sm:w-auto px-10 py-5 rounded-2xl bg-white text-slate-950 font-bold text-xl hover:shadow-2xl transition-all text-center">Get OperDiva Today</a>
+             <a href="#pricing" className="w-full sm:w-auto px-10 py-5 rounded-2xl bg-white text-slate-950 font-bold text-xl hover:shadow-2xl transition-all text-center">Get WP AI Optimizer Today</a>
           </div>
         </div>
       </section>
@@ -1889,7 +1860,7 @@ const LandingPage = () => {
                 <div className="w-8 h-8 rounded-lg bg-brand-primary flex items-center justify-center text-white">
                   <Bot size={18} />
                 </div>
-                <span className="text-lg font-display font-bold tracking-tight">Oper<span className="glow-text">Diva</span></span>
+                <span className="text-lg font-display font-bold tracking-tight">WP AI <span className="glow-text">Optimizer</span></span>
               </div>
               <p className="text-slate-500 text-sm max-w-xs leading-relaxed">
                 Bridging the gap between human creativity and artificial intelligence understanding. The future of the web is agent-ready.
@@ -1924,11 +1895,11 @@ const LandingPage = () => {
           </div>
           
           <div className="pt-8 border-t border-white/5 flex flex-col md:flex-row justify-between items-center gap-6">
-            <p className="text-slate-600 text-xs">© 2026 OperDiva Systems. All rights reserved.</p>
+            <p className="text-slate-600 text-xs">© 2026 WP AI Optimizer Systems. All rights reserved.</p>
             <div className="flex gap-8 text-xs text-slate-500">
-              <a href="#" className="hover:text-white transition-colors">Privacy Policy</a>
-              <a href="#" className="hover:text-white transition-colors">Terms of Service</a>
-              <a href="#" className="hover:text-white transition-colors">Cookie Policy</a>
+              <Link to="/privacy-policy" className="hover:text-white transition-colors">Privacy Policy</Link>
+              <Link to="/terms-of-service" className="hover:text-white transition-colors">Terms of Service</Link>
+              <Link to="/cookie-policy" className="hover:text-white transition-colors">Cookie Policy</Link>
             </div>
           </div>
         </div>
@@ -1951,7 +1922,7 @@ const BillingPage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
 
   const discountInfo = useMemo(() => {
     if (discountPercent === 0) return null;
-    const basePrice = selectedPlanId === "Lite" ? 10 : 50;
+    const basePrice = selectedPlanId === "Lite" ? 10 : 25;
     const finalPrice = basePrice * (1 - discountPercent / 100);
     return { discount: discountPercent, finalPrice };
   }, [discountPercent, selectedPlanId]);
@@ -1960,10 +1931,9 @@ const BillingPage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
     if (!promoCode.trim()) return;
     
     try {
-      const q = query(collection(db, "promos"), where("code", "==", promoCode.toUpperCase()));
-      const snap = await getDocs(q);
+      const { data: promoData, error } = await supabase.from("promos").select("*").eq("code", promoCode.toUpperCase()).single();
       
-      if (snap.empty) {
+      if (error || !promoData) {
         // Fallback for demo
         const code = promoCode.toUpperCase();
           if (code === "OFF100" || code === "FREE" || code === "ADWP100" || code === "BONUS100") {
@@ -1976,7 +1946,6 @@ const BillingPage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
         return;
       }
 
-      const promoData = snap.docs[0].data();
       setDiscountPercent(promoData.discount);
     } catch (err) {
       console.error(err);
@@ -1985,19 +1954,16 @@ const BillingPage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
 
   const handleSubscribe = async () => {
     const plan = selectedPlanId;
-    if (!auth.currentUser || !user) {
+    const { data: authData } = await supabase.auth.getUser();
+    if (!authData.user || !user) {
       navigate("/auth");
       return;
     }
 
     const isFullDiscount = discountPercent === 100;
 
-    // Skip verification check for FREE activations to avoid UX blocks
-    if (!auth.currentUser.emailVerified && !isFullDiscount) {
-      alert("Please verify your email address before making a purchase. You can resend the verification link from your Profile page.");
-      navigate("/profile");
-      return;
-    }
+    // Supabase users without confirmed emails can't login by default if confirm_email is on.
+    // If we reach here, we assume they are either verified or verification is disabled.
 
     // Skip orderId check if 100% discount
     if (!orderId.trim() && !isFullDiscount) {
@@ -2015,7 +1981,7 @@ const BillingPage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
     
     try {
       const payload = { 
-        userId: auth.currentUser.uid,
+        userId: authData.user.id,
         orderId: orderId.trim() || `FREE-${plan.toUpperCase()}-${Math.random().toString(36).substring(7).toUpperCase()}`, 
         paymentMethod: isFullDiscount ? "promo_code" : paymentMethod,
         planId: plan,
@@ -2041,12 +2007,11 @@ const BillingPage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
       
       setPayStep("verifying");
       
-      // Update Firestore
-      const userRef = doc(db, "users", auth.currentUser.uid);
-      await setDoc(userRef, {
+      // Update Postgres
+      await supabase.from("users").update({
         plan: plan,
         licenseKey: verifyData.licenseKey
-      }, { merge: true });
+      }).eq("id", authData.user.id);
       
       // Update local state
       if (user) {
@@ -2295,23 +2260,7 @@ const BillingPage = ({ user, setUser }: { user: AppUser | null, setUser: (user: 
           <h1 className="text-4xl font-display font-bold mb-4">Select Your <span className="glow-text">Upgrade</span></h1>
           <p className="text-slate-400">Upgrade your account using PayPal, Binance Pay, or Wise Bank Transfer.</p>
           
-          {!auth.currentUser?.emailVerified && (
-            <div className="mt-8 p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl max-w-2xl mx-auto flex items-center gap-4 text-left">
-              <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-500 shrink-0">
-                <AlertCircle size={20} />
-              </div>
-              <div>
-                <h4 className="font-bold text-amber-500">Email Verification Required</h4>
-                <p className="text-xs text-slate-400">Please verify your email address to unlock purchase options. Check your profile settings.</p>
-              </div>
-              <button 
-                onClick={() => navigate("/profile")}
-                className="ml-auto text-xs font-bold text-amber-500 hover:underline"
-              >
-                Go to Profile
-              </button>
-            </div>
-          )}
+
         </div>
 
         <div className="grid md:grid-cols-2 gap-8 mb-16">
@@ -2453,23 +2402,40 @@ const AnalyticsPage = ({ user }: { user: AppUser | null }) => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!auth.currentUser) {
-      navigate("/auth");
-      return;
-    }
+    let isMounted = true;
+    let channel: any = null;
 
-    if (user && !user.isAdmin && user.email !== "bibhashmallik@gmail.com" && user.email !== "bheshrahdhami@gmail.com") {
-      navigate("/");
-      return;
-    }
+    const initAnalytics = async () => {
+      const { data: authData } = await supabase.auth.getUser();
+      if (!authData.user) {
+        if (isMounted) navigate("/auth");
+        return;
+      }
 
-    const unsubscribe = onSnapshot(collection(db, "users", auth.currentUser.uid, "sites"), (snapshot) => {
-      const siteData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Site));
-      setSites(siteData);
-    });
+      if (user && !user.isAdmin && user.email !== "bibhashmallik@gmail.com" && user.email !== "bheshrahdhami@gmail.com") {
+        if (isMounted) navigate("/");
+        return;
+      }
 
-    return () => unsubscribe();
-  }, [navigate]);
+      const fetchSites = async () => {
+        const { data } = await supabase.from("sites").select("*").eq("user_id", authData.user.id);
+        if (data && isMounted) setSites(data as Site[]);
+      };
+
+      await fetchSites();
+
+      channel = supabase.channel('public:analytics:sites')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'sites' }, fetchSites)
+        .subscribe();
+    };
+
+    initAnalytics();
+
+    return () => {
+      isMounted = false;
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [navigate, user]);
 
   // Mock data for analytics
   const performanceData = useMemo(() => [
@@ -2590,7 +2556,7 @@ const AnalyticsPage = ({ user }: { user: AppUser | null }) => {
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="w-3 h-3 rounded-full bg-brand-primary" />
-                  <span className="text-xs text-slate-400">OperDiva</span>
+                  <span className="text-xs text-slate-400">WP AI Optimizer</span>
                 </div>
               </div>
             </div>
@@ -2755,11 +2721,11 @@ const AdminDashboard = ({ user }: { user: AppUser | null }) => {
     if (!newPromo.code) return;
     setLoading(true);
     try {
-      await addDoc(collection(db, "promos"), {
+      const { error } = await supabase.from("promos").insert({
         code: newPromo.code.toUpperCase().trim(),
-        discount: Number(newPromo.discount),
-        createdAt: serverTimestamp()
+        discount: Number(newPromo.discount)
       });
+      if (error) throw error;
       setShowCreatePromo(false);
       setNewPromo({ code: "", discount: 20 });
       alert("Success: Promo code '" + newPromo.code.toUpperCase() + "' created!");
@@ -2777,62 +2743,73 @@ const AdminDashboard = ({ user }: { user: AppUser | null }) => {
       return;
     }
 
-    const unsubscribe = onSnapshot(collection(db, "users"), async (snapshot) => {
-      const usersData: any[] = [];
-      let revenue = 0;
-      let sitesCount = 0;
-      let activePlansCount = 0;
+    let isMounted = true;
+    let usersSubscription: any;
+    let promosSubscription: any;
+    let promoLogsSubscription: any;
 
-      const results = await Promise.all(snapshot.docs.map(async (userDoc) => {
-        const u = { id: userDoc.id, ...userDoc.data() } as any;
-        
-        // Unify pricing with server.ts (Lite: $10, Pro: $50)
-        let userSpent = 0;
-        if (u.plan === "Lite") userSpent = 10;
-        if (u.plan === "Pro") userSpent = 50;
-        
-        revenue += userSpent;
-        u.revenue = userSpent;
-        
-        if (u.plan && u.plan !== "None") activePlansCount++;
+    const fetchAllData = async () => {
+      const { data: usersData, error } = await supabase.from("users").select("*, sites(count)");
+      if (!error && usersData) {
+        let revenue = 0;
+        let sitesCount = 0;
+        let activePlansCount = 0;
 
-        // Get sites count for this user
-        const sitesSnap = await getDocs(collection(db, "users", userDoc.id, "sites"));
-        sitesCount += sitesSnap.size;
-        u.sitesCount = sitesSnap.size;
-        
-        // Mock API generations as 5x sites count + random variance for "realism"
-        u.apiGenerations = u.sitesCount > 0 ? (u.sitesCount * 5 + Math.floor(Math.random() * 10)) : 0;
-        
-        return u;
-      }));
+        const results = usersData.map((u: any) => {
+          let userSpent = 0;
+          if (u.plan === "Lite") userSpent = 10;
+          if (u.plan === "Pro") userSpent = 50;
+          revenue += userSpent;
+          u.revenue = userSpent;
+          if (u.plan && u.plan !== "None") activePlansCount++;
+          
+          // @ts-ignore
+          u.sitesCount = u.sites?.[0]?.count || 0;
+          sitesCount += u.sitesCount;
+          
+          u.apiGenerations = u.sitesCount > 0 ? (u.sitesCount * 5 + Math.floor(Math.random() * 10)) : 0;
+          return u;
+        });
 
-      setAllUsers(results);
-      setGlobalStats({
-        totalUsers: snapshot.size,
-        totalRevenue: Math.round(revenue),
-        totalSites: sitesCount,
-        activePlans: activePlansCount
-      });
-      setLoading(false);
-    });
+        if (isMounted) {
+          setAllUsers(results);
+          setGlobalStats({
+            totalUsers: usersData.length,
+            totalRevenue: Math.round(revenue),
+            totalSites: sitesCount,
+            activePlans: activePlansCount
+          });
+          setLoading(false);
+        }
+      }
 
-    // Fetch All Defined Promos
-    const promosUnsubscribe = onSnapshot(collection(db, "promos"), (snapshot) => {
-      setAllDefinedPromos(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    });
+      const { data: promosData } = await supabase.from("promos").select("*");
+      if (promosData && isMounted) setAllDefinedPromos(promosData);
 
-    // Fetch Promo Logs and aggregate
-    const promoUnsubscribe = onSnapshot(query(collection(db, "promoLogs"), orderBy("timestamp", "desc")), (snapshot) => {
-      const logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setRecentPromoLogs(logs.slice(0, 5));
-      setPromoLogs(logs); // We need this to combine later
-    });
+      const { data: promoLogsData } = await supabase.from("promoLogs").select("*").order("timestamp", { ascending: false });
+      if (promoLogsData && isMounted) {
+        setRecentPromoLogs(promoLogsData.slice(0, 5));
+        setPromoLogs(promoLogsData);
+      }
+    };
+
+    fetchAllData();
+
+    // Subscribe to realtime changes
+    usersSubscription = supabase.channel('public:users')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, fetchAllData).subscribe();
+      
+    promosSubscription = supabase.channel('public:promos')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'promos' }, fetchAllData).subscribe();
+      
+    promoLogsSubscription = supabase.channel('public:promoLogs')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'promoLogs' }, fetchAllData).subscribe();
 
     return () => {
-      unsubscribe();
-      promosUnsubscribe();
-      promoUnsubscribe();
+      isMounted = false;
+      if (usersSubscription) supabase.removeChannel(usersSubscription);
+      if (promosSubscription) supabase.removeChannel(promosSubscription);
+      if (promoLogsSubscription) supabase.removeChannel(promoLogsSubscription);
     };
   }, [user, navigate]);
 
@@ -2982,7 +2959,7 @@ const AdminDashboard = ({ user }: { user: AppUser | null }) => {
                                  e.stopPropagation();
                                  if(confirm(`Delete promo code ${promo.code}?`)) {
                                    try {
-                                     await deleteDoc(doc(db, "promos", promo.id));
+                                     await supabase.from("promos").delete().eq("id", promo.id);
                                    } catch (err) {
                                      alert("Error: Permission Denied");
                                    }
@@ -3166,7 +3143,7 @@ const AdminDashboard = ({ user }: { user: AppUser | null }) => {
                            <button 
                              onClick={async () => {
                                if(confirm(`Grant Pro Access to ${u.email}?`)) {
-                                 await updateDoc(doc(db, "users", u.id), { plan: "Pro", licenseKey: "MANUAL-" + Math.random().toString(36).substring(7).toUpperCase() });
+                                 await supabase.from("users").update({ plan: "Pro", licenseKey: "MANUAL-" + Math.random().toString(36).substring(7).toUpperCase() }).eq("id", u.id);
                                }
                              }}
                              className="p-2 rounded-lg bg-emerald-400/10 text-emerald-400 border border-emerald-400/20 hover:bg-emerald-400/20 transition-all"
@@ -3177,7 +3154,7 @@ const AdminDashboard = ({ user }: { user: AppUser | null }) => {
                            <button 
                              onClick={async () => {
                                if(confirm(`Revoke Plan for ${u.email}?`)) {
-                                 await updateDoc(doc(db, "users", u.id), { plan: "None", licenseKey: null });
+                                 await supabase.from("users").update({ plan: "None", licenseKey: null }).eq("id", u.id);
                                }
                              }}
                              className="p-2 rounded-lg bg-red-400/10 text-red-400 border border-red-400/20 hover:bg-red-400/20 transition-all"
@@ -3205,22 +3182,18 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
+    const fetchUser = async (sessionUser: any) => {
+      if (sessionUser) {
         setIsLoggedIn(true);
-        // Fetch user profile from Firestore
         try {
-          const userDoc = await getDoc(doc(db, "users", firebaseUser.uid));
-          if (userDoc.exists()) {
-            const userData = userDoc.data() as AppUser;
-            // Admin Check
-            if (firebaseUser.email === "bheshrahdhami@gmail.com" || firebaseUser.email === "bibhashmallik@gmail.com") {
+          const { data: userData, error } = await supabase.from("users").select("*").eq("id", sessionUser.id).single();
+          if (userData && !error) {
+            if (sessionUser.email === "bheshrahdhami@gmail.com" || sessionUser.email === "bibhashmallik@gmail.com") {
               userData.isAdmin = true;
             }
-            setUser(userData);
+            setUser(userData as AppUser);
           } else {
-            // Handle case where auth exists but doc doesn't (shouldn't happen with our signup flow)
-            console.warn("User auth exists but Firestore document missing.");
+            console.warn("User auth exists but database document missing.", error);
           }
         } catch (error) {
           console.error("Error fetching user profile:", error);
@@ -3230,31 +3203,20 @@ export default function App() {
         setUser(null);
       }
       setIsLoading(false);
+    };
+
+    // Initial check
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      fetchUser(session?.user);
     });
 
-    return () => unsubscribe();
-  }, []);
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      fetchUser(session?.user);
+    });
 
-  // Polling for email verification status
-  useEffect(() => {
-    let interval: any;
-    if (isLoggedIn && auth.currentUser && !auth.currentUser.emailVerified) {
-      interval = setInterval(async () => {
-        await auth.currentUser?.reload();
-        if (auth.currentUser?.emailVerified) {
-          // If verified, we can either reload the page or navigate
-          // Reloading the profile state is safer
-          const userDoc = await getDoc(doc(db, "users", auth.currentUser!.uid));
-          if (userDoc.exists()) {
-            setUser(userDoc.data() as AppUser);
-          }
-          clearInterval(interval);
-          // Optional: Notify user or redirect
-        }
-      }, 3000);
-    }
-    return () => clearInterval(interval);
-  }, [isLoggedIn, user]);
+    return () => subscription.unsubscribe();
+  }, []);
 
   if (isLoading) {
     return (
@@ -3274,7 +3236,234 @@ export default function App() {
         <Route path="/billing" element={<BillingPage user={user} setUser={setUser} />} />
         <Route path="/analytics" element={<AnalyticsPage user={user} />} />
         <Route path="/admin" element={<AdminDashboard user={user} />} />
+        <Route path="/contact" element={<ContactPage />} />
+        <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
+        <Route path="/terms-of-service" element={<TermsOfServicePage />} />
+        <Route path="/cookie-policy" element={<CookiePolicyPage />} />
       </Routes>
     </div>
   );
 }
+
+const ContactPage = () => {
+  const [websites, setWebsites] = useState("1-5");
+  const [message, setMessage] = useState("");
+  const [email, setEmail] = useState("");
+  const [whatsapp, setWhatsapp] = useState("");
+  const [isSubmitted, setIsSubmitted] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setIsSending(true);
+    try {
+      const response = await fetch("/api/contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ websites, email, whatsapp, message })
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Failed to submit request.");
+      }
+      setIsSubmitted(true);
+    } catch (err: any) {
+      alert(err.message || "Something went wrong. Please try again.");
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen pt-32 pb-20 px-6 flex items-center justify-center relative overflow-hidden bg-[#020617]">
+      <div className="absolute top-1/4 -left-20 w-96 h-96 bg-brand-primary/10 blur-[128px] rounded-full -z-10" />
+      <div className="absolute bottom-1/4 -right-20 w-96 h-96 bg-brand-secondary/10 blur-[128px] rounded-full -z-10" />
+
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="max-w-md w-full glass p-8 md:p-10 rounded-[2.5rem] border-white/10 shadow-2xl relative"
+      >
+        <Link to="/" className="absolute top-6 right-6 p-2 rounded-full hover:bg-white/5 text-slate-500 hover:text-white transition-all"><X size={20} /></Link>
+
+        {isSubmitted ? (
+          <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="text-center py-12">
+            <div className="w-20 h-20 bg-green-500/20 text-green-500 rounded-full flex items-center justify-center mx-auto mb-6">
+              <CheckCircle2 size={40} />
+            </div>
+            <h2 className="text-3xl font-display font-bold mb-2">Message Sent!</h2>
+            <p className="text-slate-400">Thank you for reaching out to WP AI Optimizer. Our team will contact you shortly via email or WhatsApp.</p>
+            <Link to="/" className="inline-block mt-8 px-6 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-sm font-bold hover:bg-slate-800 transition-all">Back to Home</Link>
+          </motion.div>
+        ) : (
+          <>
+            <div className="text-center mb-8">
+              <h2 className="text-3xl font-display font-bold mb-2">Contact Sales</h2>
+              <p className="text-slate-400 text-sm">Tell us about your project or enterprise needs, and we'll craft a custom plan for you.</p>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-xs font-bold uppercase tracking-widest text-slate-500 ml-1">Number of Websites</label>
+                <select 
+                  value={websites} 
+                  onChange={(e) => setWebsites(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-brand-primary transition-colors text-white"
+                >
+                  <option value="1-5">1 - 5 Websites</option>
+                  <option value="6-10">6 - 10 Websites</option>
+                  <option value="11-25">11 - 25 Websites</option>
+                  <option value="26-50">26 - 50 Websites</option>
+                  <option value="50+">50+ Websites (Enterprise)</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold uppercase tracking-widest text-slate-500 ml-1">Email Address</label>
+                <input 
+                  type="email" 
+                  required
+                  placeholder="name@company.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-brand-primary transition-colors text-white pl-4"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold uppercase tracking-widest text-slate-500 ml-1">WhatsApp Number</label>
+                <input 
+                  type="tel" 
+                  required
+                  placeholder="+1 (555) 000-0000"
+                  value={whatsapp}
+                  onChange={(e) => setWhatsapp(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-brand-primary transition-colors text-white pl-4"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold uppercase tracking-widest text-slate-500 ml-1">Short Message</label>
+                <textarea 
+                  required
+                  rows={4}
+                  placeholder="Tell us about your requirements..."
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-brand-primary transition-colors text-white pl-4"
+                />
+              </div>
+
+              <button 
+                type="submit"
+                disabled={isSending}
+                className="w-full py-4 rounded-xl bg-gradient-to-r from-brand-primary to-brand-secondary font-bold shadow-lg hover:shadow-[0_0_20px_rgba(14,165,233,0.3)] disabled:opacity-50 transition-all mt-4 flex items-center justify-center gap-2"
+              >
+                {isSending ? <Loader2 size={20} className="animate-spin" /> : "Submit Request"}
+              </button>
+            </form>
+          </>
+        )}
+      </motion.div>
+    </div>
+  );
+};
+
+const PrivacyPolicyPage = () => {
+  return (
+    <div className="min-h-screen pt-32 pb-20 px-6 relative overflow-hidden bg-[#020617] text-slate-300">
+      <div className="max-w-4xl mx-auto glass p-8 md:p-12 rounded-[2.5rem] border-white/10 shadow-2xl">
+        <h1 className="text-4xl font-display font-bold mb-8 text-white glow-text">Privacy Policy</h1>
+        <p className="text-slate-400 text-xs mb-8">Last updated: July 2, 2026</p>
+        
+        <div className="space-y-6 text-sm leading-relaxed">
+          <section>
+            <h2 className="text-xl font-bold text-white mb-3">1. Information We Collect</h2>
+            <p>At WP AI Optimizer, we collect information directly from you when you register an account, purchase a license key, or contact support. This includes your name, email address, WhatsApp number (for custom plans), and website URLs connected to our plugin.</p>
+          </section>
+
+          <section>
+            <h2 className="text-xl font-bold text-white mb-3">2. How We Use Your Information</h2>
+            <p>We use the collected data to validate licenses, monitor system health, process payments, and improve our services. We do not sell, rent, or trade your personal information to third parties.</p>
+          </section>
+
+          <section>
+            <h2 className="text-xl font-bold text-white mb-3">3. Data Storage & Security</h2>
+            <p>Your user profile and credentials are stored securely via Supabase Auth and database clusters. We utilize industry-standard cryptographic practices to encrypt your passwords and sensitive information.</p>
+          </section>
+
+          <section>
+            <h2 className="text-xl font-bold text-white mb-3">4. Cookies and Crawlers</h2>
+            <p>WP AI Optimizer serves dedicated schema content and optimized response pages directly to recognized AI crawlers (e.g. GPT-Bot, Claude-Bot, Google-Extended). Standard session cookies are used on this platform strictly for user authentication purposes.</p>
+          </section>
+
+          <section>
+            <h2 className="text-xl font-bold text-white mb-3">5. Contact Us</h2>
+            <p>If you have any questions about this Privacy Policy, please reach out to us at support@wpaioptimizer.com.</p>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const TermsOfServicePage = () => {
+  return (
+    <div className="min-h-screen pt-32 pb-20 px-6 relative overflow-hidden bg-[#020617] text-slate-300">
+      <div className="max-w-4xl mx-auto glass p-8 md:p-12 rounded-[2.5rem] border-white/10 shadow-2xl">
+        <h1 className="text-4xl font-display font-bold mb-8 text-white glow-text">Terms of Service</h1>
+        <p className="text-slate-400 text-xs mb-8">Last updated: July 2, 2026</p>
+        
+        <div className="space-y-6 text-sm leading-relaxed">
+          <section>
+            <h2 className="text-xl font-bold text-white mb-3">1. Agreement to Terms</h2>
+            <p>By accessing or using WP AI Optimizer, you agree to be bound by these Terms of Service. If you do not agree to all terms, do not download, install, or use WP AI Optimizer.</p>
+          </section>
+
+          <section>
+            <h2 className="text-xl font-bold text-white mb-3">2. License Key Usage</h2>
+            <p>We grant you a non-exclusive, non-transferable, revocable license to use our plugin in accordance with your purchased plan (Lite: 3 websites, Pro: 10 websites). Sharing or reselling license keys is strictly prohibited and will result in immediate termination of service.</p>
+          </section>
+
+          <section>
+            <h2 className="text-xl font-bold text-white mb-3">3. Payments & Refund Policy</h2>
+            <p>All sales are processed via our verified payment gateway methods. Due to the digital nature of the software, refunds are handled on a case-by-case basis within 14 days of purchase if the plugin fails to perform on your hosting server.</p>
+          </section>
+
+          <section>
+            <h2 className="text-xl font-bold text-white mb-3">4. Limitation of Liability</h2>
+            <p>WP AI Optimizer is provided "as is". In no event shall we be liable for any damages, traffic losses, indexation issues, or compatibility problems with third-party WordPress themes or plugins.</p>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const CookiePolicyPage = () => {
+  return (
+    <div className="min-h-screen pt-32 pb-20 px-6 relative overflow-hidden bg-[#020617] text-slate-300">
+      <div className="max-w-4xl mx-auto glass p-8 md:p-12 rounded-[2.5rem] border-white/10 shadow-2xl">
+        <h1 className="text-4xl font-display font-bold mb-8 text-white glow-text">Cookie Policy</h1>
+        <p className="text-slate-400 text-xs mb-8">Last updated: July 2, 2026</p>
+        
+        <div className="space-y-6 text-sm leading-relaxed">
+          <section>
+            <h2 className="text-xl font-bold text-white mb-3">1. What Are Cookies</h2>
+            <p>Cookies are small text files placed on your device to store data that can be recalled by a web server in the domain that placed the cookie.</p>
+          </section>
+
+          <section>
+            <h2 className="text-xl font-bold text-white mb-3">2. How We Use Cookies</h2>
+            <p>We use strictly necessary session cookies to maintain your login status, preserve your session across dashboard updates, and secure user transactions. We do not use third-party tracking or advertising cookies.</p>
+          </section>
+
+          <section>
+            <h2 className="text-xl font-bold text-white mb-3">3. Managing Cookies</h2>
+            <p>Most web browsers allow you to control cookies through their settings preferences. Blocking essential cookies will prevent you from logging in and managing your WP AI Optimizer dashboard.</p>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+};

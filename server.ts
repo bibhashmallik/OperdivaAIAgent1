@@ -2,79 +2,36 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import cors from "cors";
-import { initializeApp as initializeAdmin, getApps, cert } from "firebase-admin/app";
-import { getAuth as getAdminAuth } from "firebase-admin/auth";
+import { createClient } from "@supabase/supabase-js";
+import 'dotenv/config'; // Make sure to load env vars
 import nodemailer from "nodemailer";
 
-// Client SDK for Firestore (to bypass IAM issues)
-import { initializeApp as initializeClient } from "firebase/app";
-import {
-  getFirestore,
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  setDoc,
-  updateDoc,
-  addDoc,
-  query,
-  where,
-  orderBy,
-  serverTimestamp,
-  deleteDoc
-} from "firebase/firestore";
+// Initialize Supabase Admin (Service Role) for backend operations
+const supabaseUrl = process.env.VITE_SUPABASE_URL || "https://placeholder-project.supabase.co";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-key";
 
-// Load Firebase configuration
-import firebaseConfig from "./firebase-applet-config.json" assert { type: "json" };
-
-// Initialize Firebase Admin (for Auth ONLY)
-if (getApps().length === 0) {
-  let credential = undefined;
-  const keyPath = path.join(process.cwd(), "serviceAccountKey.json.json");
-  
-  if (fs.existsSync(keyPath)) {
-    const serviceAccount = JSON.parse(fs.readFileSync(keyPath, "utf8"));
-    credential = cert(serviceAccount);
-  } else {
-    // Fallback if key is missing (e.g. forgot to upload to server)
-    console.error("CRITICAL: serviceAccountKey.json.json not found! Custom emails will fail.");
+const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false
   }
-
-  if (credential) {
-    initializeAdmin({ credential });
-  }
-}
-
-const adminApp = getApps()[0];
-const adminAuth = getAdminAuth(adminApp);
-
-// Initialize Client SDK for Firestore
-const clientApp = initializeClient(firebaseConfig);
-const db = getFirestore(clientApp, firebaseConfig.firestoreDatabaseId);
+});
 
 // Startup check
 (async () => {
   try {
-    const snap = await getDocs(query(collection(db, "promos"), where("code", "==", "OFF100")));
-    console.log(`SUCCESS: Client SDK connectivity verified. Promos found: ${snap.size}`);
+    const { count, error } = await supabase
+      .from("promos")
+      .select("*", { count: 'exact', head: true })
+      .eq("code", "OFF100");
+    if (error) throw error;
+    console.log(`SUCCESS: Supabase connectivity verified. Promos found: ${count}`);
   } catch (e: any) {
-    console.error("CRITICAL: Client SDK Firestore check failed:", e.message);
+    console.error("CRITICAL: Supabase check failed:", e.message);
   }
 })();
 
-console.log(`Firebase services initialized for project: ${firebaseConfig.projectId}`);
-console.log(`Firestore target: ${firebaseConfig.firestoreDatabaseId}`);
-
-// Setup Nodemailer Transporter (Update with your CyberPanel SMTP details)
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "mail.wpaioptimizer.com",
-  port: parseInt(process.env.SMTP_PORT || "465"),
-  secure: true, // true for 465, false for other ports
-  auth: {
-    user: process.env.SMTP_USER || "noreply@wpaioptimizer.com",
-    pass: process.env.SMTP_PASS || "Cl45pD%DN2o%wnhE",
-  },
-});
+console.log(`Supabase services initialized for project: ${supabaseUrl}`);
 
 async function startServer() {
   const app = express();
@@ -94,19 +51,20 @@ async function startServer() {
     const idToken = authHeader.split("Bearer ")[1];
 
     try {
-      // 1. Verify the User's ID Token (Admin SDK is fine for this)
-      const decodedToken = await adminAuth.verifyIdToken(idToken);
-      const uid = decodedToken.uid;
+      // 1. Verify the User's ID Token
+      const { data: authData, error: authError } = await supabase.auth.getUser(idToken);
+      if (authError || !authData.user) {
+        throw new Error("Invalid token");
+      }
+      const uid = authData.user.id;
 
-      // 2. Check User's Plan in Firestore (Client SDK)
-      const userRef = doc(db, "users", uid);
-      const userDoc = await getDoc(userRef);
+      // 2. Check User's Plan in Postgres
+      const { data: userData, error: dbError } = await supabase.from("users").select("*").eq("id", uid).single();
 
-      if (!userDoc.exists()) {
+      if (dbError || !userData) {
         return res.status(404).json({ success: false, message: "User not found." });
       }
 
-      const userData = userDoc.data();
       const hasPlan = userData?.plan && (userData.plan === "Lite" || userData.plan === "Pro");
 
       if (!hasPlan) {
@@ -131,25 +89,20 @@ async function startServer() {
     if (!licenseKey) return res.status(400).json({ valid: false, message: "License key is required" });
 
     try {
-      const userQuery = query(collection(db, "users"), where("licenseKey", "==", licenseKey));
-      const userSnap = await getDocs(userQuery);
+      const { data: userData, error: userError } = await supabase.from("users").select("*").eq("licenseKey", licenseKey).single();
+      if (userError || !userData) return res.json({ valid: false, message: "Invalid license key" });
 
-      if (userSnap.empty) return res.json({ valid: false, message: "Invalid license key" });
+      const userId = userData.id;
 
-      const userDoc = userSnap.docs[0];
-      const userData = userDoc.data();
-      const userId = userDoc.id;
+      const { data: siteData, error: siteError } = await supabase.from("sites").select("*").eq("user_id", userId).eq("url", domain);
 
-      const sitesRef = collection(db, "users", userId, "sites");
-      const siteQuery = query(sitesRef, where("url", "==", domain));
-      const siteSnap = await getDocs(siteQuery);
-
-      if (siteSnap.empty) {
-        await addDoc(sitesRef, {
+      if (siteError || !siteData || siteData.length === 0) {
+        const apiKey = `AU-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+        await supabase.from("sites").insert({
+          user_id: userId,
           url: domain,
           status: "active",
-          apiKey: `AU-${Math.random().toString(36).substring(2, 10).toUpperCase()}`,
-          createdAt: serverTimestamp(),
+          apiKey,
           health: 100,
           lastSync: "Auto-activated"
         });
@@ -171,22 +124,19 @@ async function startServer() {
       await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
 
       let discount = 0;
-      let finalPrice = planId === "Lite" ? 10 : 50;
+      let finalPrice = planId === "Lite" ? 10 : 25;
 
       if (promoCode) {
-        const promoQuery = query(collection(db, "promos"), where("code", "==", promoCode.toUpperCase()));
-        const promoSnap = await getDocs(promoQuery);
+        const { data: promoData, error: promoError } = await supabase.from("promos").select("*").eq("code", promoCode.toUpperCase()).single();
 
-        if (!promoSnap.empty) {
-          const promoData = promoSnap.docs[0].data();
+        if (!promoError && promoData) {
           discount = promoData.discount || 0;
           finalPrice = Math.max(0, finalPrice * (1 - discount / 100));
 
-          await addDoc(collection(db, "promoLogs"), {
+          await supabase.from("promoLogs").insert({
             code: promoCode.toUpperCase(),
             discountPercent: discount,
             plan: planId,
-            timestamp: serverTimestamp(),
             userId: userId || "anonymous",
             finalPrice,
             orderId
@@ -195,14 +145,13 @@ async function startServer() {
       }
 
       // Log the transaction attempt
-      await addDoc(collection(db, "transactions"), {
+      await supabase.from("transactions").insert({
         userId: userId || "anonymous",
         orderId,
         paymentMethod,
         planId,
         amount: finalPrice,
-        status: "verified",
-        timestamp: serverTimestamp()
+        status: "verified"
       });
 
       const licenseKey = `AUTH-${planId.toUpperCase()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
@@ -228,90 +177,148 @@ async function startServer() {
     try {
       const cleanDomain = domain.replace(/^(?:https?:\/\/)?(?:www\.)?/i, "").split('/')[0].toLowerCase();
 
-      const usersSnap = await getDocs(collection(db, "users"));
-      let recognizedUser = null;
+      const { data: sitesData, error: sitesError } = await supabase.from("sites").select("*, users(plan)").eq("apiKey", siteKey);
 
-      for (const userDoc of usersSnap.docs) {
-        const sitesSnap = await getDocs(query(collection(db, "users", userDoc.id, "sites"), where("apiKey", "==", siteKey)));
-        if (!sitesSnap.empty) {
-          const siteData = sitesSnap.docs[0].data();
-          const sDomain = siteData.url.replace(/^(?:https?:\/\/)?(?:www\.)?/i, "").split('/')[0].toLowerCase();
+      let recognizedUserPlan = null;
+
+      if (!sitesError && sitesData && sitesData.length > 0) {
+        for (const site of sitesData) {
+          const sDomain = site.url.replace(/^(?:https?:\/\/)?(?:www\.)?/i, "").split('/')[0].toLowerCase();
           if (sDomain === cleanDomain) {
-            recognizedUser = userDoc.data();
+            recognizedUserPlan = site.users?.plan;
             break;
           }
         }
       }
 
-      if (!recognizedUser) return res.status(403).json({ success: false, message: "Invalid Site Key" });
+      if (!recognizedUserPlan) return res.status(403).json({ success: false, message: "Invalid Site Key or Domain" });
 
-      res.json({ success: true, plan: recognizedUser.plan });
+      res.json({ success: true, plan: recognizedUserPlan });
     } catch (error) {
+      console.error("Activation error:", error);
       res.status(500).json({ success: false });
     }
   });
 
-  // CUSTOM EMAIL AUTH ENDPOINTS
-  app.post("/api/auth/reset-password", async (req, res) => {
+  // Endpoint to request a temporary password sent via SMTP
+  app.post("/api/auth/request-password", async (req, res) => {
     const { email } = req.body;
-    if (!email) return res.status(400).json({ success: false, message: "Email required" });
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email is required" });
+    }
 
     try {
-      // 1. Generate the raw Firebase password reset link
-      const resetLink = await adminAuth.generatePasswordResetLink(email);
+      const tempPassword = Math.random().toString(36).substring(2, 10).toUpperCase();
 
-      // 2. Send the email using your CyberPanel SMTP
-      await transporter.sendMail({
-        from: '"WP AI Optimizer" <noreply@wpaioptimizer.com>',
-        to: email,
-        subject: "Reset your password for WP AI Optimizer",
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Password Reset Request</h2>
-            <p>We received a request to reset your password for your WP AI Optimizer account.</p>
-            <p>Click the button below to choose a new password:</p>
-            <a href="${resetLink}" style="display: inline-block; padding: 12px 24px; background-color: #0ea5e9; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; margin: 16px 0;">Reset Password</a>
-            <p style="color: #666; font-size: 14px;">If you didn't request this, you can safely ignore this email.</p>
-          </div>
-        `
+      // Check if user exists in auth
+      const { data: listData, error: listError } = await supabase.auth.admin.listUsers();
+      if (listError) throw listError;
+
+      const existingAuthUser = listData.users.find((u: any) => u.email?.toLowerCase() === email.toLowerCase());
+
+      let userId;
+      if (existingAuthUser) {
+        userId = existingAuthUser.id;
+        const { error: updateError } = await supabase.auth.admin.updateUserById(userId, {
+          password: tempPassword
+        });
+        if (updateError) throw updateError;
+      } else {
+        const { data: createData, error: createError } = await supabase.auth.admin.createUser({
+          email,
+          password: tempPassword,
+          email_confirm: true,
+          user_metadata: { name: email.split('@')[0] }
+        });
+        if (createError) throw createError;
+        userId = createData.user.id;
+      }
+
+      // Ensure public.users entry exists
+      const { data: dbUser } = await supabase.from("users").select("*").eq("id", userId).maybeSingle();
+      if (!dbUser) {
+        await supabase.from("users").upsert({
+          id: userId,
+          name: email.split('@')[0],
+          email: email,
+          plan: "None"
+        });
+      }
+
+      // Configure transporter
+      const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST || '24.199.103.192',
+        port: parseInt(process.env.SMTP_PORT || '465'),
+        secure: true,
+        auth: {
+          user: process.env.SMTP_USER || 'noreply@wpaioptimizer.com',
+          pass: process.env.SMTP_PASS || 'Cl45pD%DN2o%wnhE'
+        },
+        tls: {
+          rejectUnauthorized: false
+        }
       });
 
-      res.json({ success: true, message: "Password reset email sent successfully" });
+      const mailOptions = {
+        from: `"WP AI Optimizer Auth" <${process.env.SMTP_USER || 'noreply@wpaioptimizer.com'}>`,
+        to: email,
+        subject: 'Your WP AI Optimizer Temporary Password / Login Code',
+        text: `Hello,\n\nYour temporary password to log in to WP AI Optimizer is: ${tempPassword}\n\nPlease use this password to log in. You can change your password in your profile page after logging in.\n\nBest regards,\nThe WP AI Optimizer Team`,
+        html: `<p>Hello,</p><p>Your temporary password to log in to WP AI Optimizer is: <strong>${tempPassword}</strong></p><p>Please use this password to log in. You can change your password in your profile page after logging in.</p><br/><p>Best regards,<br/>The WP AI Optimizer Team</p>`
+      };
+
+      await transporter.sendMail(mailOptions);
+
+      res.json({ success: true, message: "Temporary password sent to your email." });
     } catch (error: any) {
-      console.error("Custom reset password error:", error);
-      res.status(500).json({ success: false, message: error.message || "Failed to send reset email" });
+      console.error("Error in request-password:", error);
+      res.status(500).json({ success: false, message: error.message || "Failed to generate or send password" });
     }
   });
 
-  app.post("/api/auth/verify-email", async (req, res) => {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ success: false, message: "Email required" });
+  // Endpoint to handle the Enterprise Contact form submission
+  app.post("/api/contact", async (req, res) => {
+    const { websites, email, whatsapp, message } = req.body;
+    if (!email || !whatsapp || !message) {
+      return res.status(400).json({ success: false, message: "Missing required fields" });
+    }
 
     try {
-      // 1. Generate the raw Firebase email verification link
-      const verificationLink = await adminAuth.generateEmailVerificationLink(email);
-
-      // 2. Send the email using your CyberPanel SMTP
-      await transporter.sendMail({
-        from: '"WP AI Optimizer" <noreply@wpaioptimizer.com>',
-        to: email,
-        subject: "Verify your email for WP AI Optimizer",
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Verify Your Email</h2>
-            <p>Welcome to WP AI Optimizer! Please verify your email address to get started.</p>
-            <a href="${verificationLink}" style="display: inline-block; padding: 12px 24px; background-color: #0ea5e9; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; margin: 16px 0;">Verify Email</a>
-            <p style="color: #666; font-size: 14px;">If you didn't sign up for this account, you can safely ignore this email.</p>
-          </div>
-        `
+      const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST || '24.199.103.192',
+        port: parseInt(process.env.SMTP_PORT || '465'),
+        secure: true,
+        auth: {
+          user: process.env.SMTP_USER || 'noreply@wpaioptimizer.com',
+          pass: process.env.SMTP_PASS || 'Cl45pD%DN2o%wnhE'
+        },
+        tls: {
+          rejectUnauthorized: false
+        }
       });
 
-      res.json({ success: true, message: "Verification email sent successfully" });
+      const mailOptions = {
+        from: `"WP AI Optimizer Contact Form" <${process.env.SMTP_USER || 'noreply@wpaioptimizer.com'}>`,
+        to: process.env.SMTP_USER || 'noreply@wpaioptimizer.com', // Sends the inquiry directly to your inbox
+        subject: `New Enterprise Inquiry from ${email}`,
+        text: `New Enterprise Inquiry:\n\nEmail: ${email}\nWhatsApp: ${whatsapp}\nWebsites: ${websites}\n\nMessage:\n${message}`,
+        html: `<h3>New Enterprise Inquiry</h3>
+               <p><strong>Email:</strong> ${email}</p>
+               <p><strong>WhatsApp:</strong> ${whatsapp}</p>
+               <p><strong>Websites Needed:</strong> ${websites}</p>
+               <p><strong>Message:</strong></p>
+               <p>${message.replace(/\n/g, '<br/>')}</p>`
+      };
+
+      await transporter.sendMail(mailOptions);
+      res.json({ success: true, message: "Inquiry sent successfully." });
     } catch (error: any) {
-      console.error("Custom verify email error:", error);
-      res.status(500).json({ success: false, message: error.message || "Failed to send verification email" });
+      console.error("Error in contact form API:", error);
+      res.status(500).json({ success: false, message: error.message || "Failed to send message." });
     }
   });
+
+
 
   // Vite/Static Setup
   if (process.env.NODE_ENV !== "production") {

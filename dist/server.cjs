@@ -24,64 +24,28 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 // server.ts
 var import_express = __toESM(require("express"), 1);
 var import_path = __toESM(require("path"), 1);
-var import_fs = __toESM(require("fs"), 1);
 var import_cors = __toESM(require("cors"), 1);
-var import_app = require("firebase-admin/app");
-var import_auth = require("firebase-admin/auth");
+var import_supabase_js = require("@supabase/supabase-js");
+var import_config = require("dotenv/config");
 var import_nodemailer = __toESM(require("nodemailer"), 1);
-var import_app2 = require("firebase/app");
-var import_firestore = require("firebase/firestore");
-
-// firebase-applet-config.json
-var firebase_applet_config_default = {
-  projectId: "gen-lang-client-0725991137",
-  appId: "1:699135452058:web:d18a7c20fec0ad23e75023",
-  apiKey: "AIzaSyCr04MCRGHq5kje6Yaiwhyh_tF7XN1FATA",
-  authDomain: "gen-lang-client-0725991137.firebaseapp.com",
-  firestoreDatabaseId: "ai-studio-aac49e75-e7eb-4fba-b2c1-8efe717610d4",
-  storageBucket: "gen-lang-client-0725991137.firebasestorage.app",
-  messagingSenderId: "699135452058",
-  measurementId: ""
-};
-
-// server.ts
-if ((0, import_app.getApps)().length === 0) {
-  let credential = void 0;
-  const keyPath = import_path.default.join(process.cwd(), "serviceAccountKey.json.json");
-  if (import_fs.default.existsSync(keyPath)) {
-    const serviceAccount = JSON.parse(import_fs.default.readFileSync(keyPath, "utf8"));
-    credential = (0, import_app.cert)(serviceAccount);
-  } else {
-    console.error("CRITICAL: serviceAccountKey.json.json not found! Custom emails will fail.");
-  }
-  if (credential) {
-    (0, import_app.initializeApp)({ credential });
-  }
-}
-var adminApp = (0, import_app.getApps)()[0];
-var adminAuth = (0, import_auth.getAuth)(adminApp);
-var clientApp = (0, import_app2.initializeApp)(firebase_applet_config_default);
-var db = (0, import_firestore.getFirestore)(clientApp, firebase_applet_config_default.firestoreDatabaseId);
-(async () => {
-  try {
-    const snap = await (0, import_firestore.getDocs)((0, import_firestore.query)((0, import_firestore.collection)(db, "promos"), (0, import_firestore.where)("code", "==", "OFF100")));
-    console.log(`SUCCESS: Client SDK connectivity verified. Promos found: ${snap.size}`);
-  } catch (e) {
-    console.error("CRITICAL: Client SDK Firestore check failed:", e.message);
-  }
-})();
-console.log(`Firebase services initialized for project: ${firebase_applet_config_default.projectId}`);
-console.log(`Firestore target: ${firebase_applet_config_default.firestoreDatabaseId}`);
-var transporter = import_nodemailer.default.createTransport({
-  host: process.env.SMTP_HOST || "mail.wpaioptimizer.com",
-  port: parseInt(process.env.SMTP_PORT || "465"),
-  secure: true,
-  // true for 465, false for other ports
+var supabaseUrl = process.env.VITE_SUPABASE_URL || "https://placeholder-project.supabase.co";
+var supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-key";
+var supabase = (0, import_supabase_js.createClient)(supabaseUrl, supabaseServiceKey, {
   auth: {
-    user: process.env.SMTP_USER || "noreply@wpaioptimizer.com",
-    pass: process.env.SMTP_PASS || "Cl45pD%DN2o%wnhE"
+    autoRefreshToken: false,
+    persistSession: false
   }
 });
+(async () => {
+  try {
+    const { count, error } = await supabase.from("promos").select("*", { count: "exact", head: true }).eq("code", "OFF100");
+    if (error) throw error;
+    console.log(`SUCCESS: Supabase connectivity verified. Promos found: ${count}`);
+  } catch (e) {
+    console.error("CRITICAL: Supabase check failed:", e.message);
+  }
+})();
+console.log(`Supabase services initialized for project: ${supabaseUrl}`);
 async function startServer() {
   const app = (0, import_express.default)();
   const PORT = 3e3;
@@ -94,14 +58,15 @@ async function startServer() {
     }
     const idToken = authHeader.split("Bearer ")[1];
     try {
-      const decodedToken = await adminAuth.verifyIdToken(idToken);
-      const uid = decodedToken.uid;
-      const userRef = (0, import_firestore.doc)(db, "users", uid);
-      const userDoc = await (0, import_firestore.getDoc)(userRef);
-      if (!userDoc.exists()) {
+      const { data: authData, error: authError } = await supabase.auth.getUser(idToken);
+      if (authError || !authData.user) {
+        throw new Error("Invalid token");
+      }
+      const uid = authData.user.id;
+      const { data: userData, error: dbError } = await supabase.from("users").select("*").eq("id", uid).single();
+      if (dbError || !userData) {
         return res.status(404).json({ success: false, message: "User not found." });
       }
-      const userData = userDoc.data();
       const hasPlan = userData?.plan && (userData.plan === "Lite" || userData.plan === "Pro");
       if (!hasPlan) {
         return res.status(403).json({ success: false, message: "No active plan found. Please purchase a license first." });
@@ -119,21 +84,17 @@ async function startServer() {
     const { licenseKey, domain } = req.body;
     if (!licenseKey) return res.status(400).json({ valid: false, message: "License key is required" });
     try {
-      const userQuery = (0, import_firestore.query)((0, import_firestore.collection)(db, "users"), (0, import_firestore.where)("licenseKey", "==", licenseKey));
-      const userSnap = await (0, import_firestore.getDocs)(userQuery);
-      if (userSnap.empty) return res.json({ valid: false, message: "Invalid license key" });
-      const userDoc = userSnap.docs[0];
-      const userData = userDoc.data();
-      const userId = userDoc.id;
-      const sitesRef = (0, import_firestore.collection)(db, "users", userId, "sites");
-      const siteQuery = (0, import_firestore.query)(sitesRef, (0, import_firestore.where)("url", "==", domain));
-      const siteSnap = await (0, import_firestore.getDocs)(siteQuery);
-      if (siteSnap.empty) {
-        await (0, import_firestore.addDoc)(sitesRef, {
+      const { data: userData, error: userError } = await supabase.from("users").select("*").eq("licenseKey", licenseKey).single();
+      if (userError || !userData) return res.json({ valid: false, message: "Invalid license key" });
+      const userId = userData.id;
+      const { data: siteData, error: siteError } = await supabase.from("sites").select("*").eq("user_id", userId).eq("url", domain);
+      if (siteError || !siteData || siteData.length === 0) {
+        const apiKey = `AU-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+        await supabase.from("sites").insert({
+          user_id: userId,
           url: domain,
           status: "active",
-          apiKey: `AU-${Math.random().toString(36).substring(2, 10).toUpperCase()}`,
-          createdAt: (0, import_firestore.serverTimestamp)(),
+          apiKey,
           health: 100,
           lastSync: "Auto-activated"
         });
@@ -150,33 +111,29 @@ async function startServer() {
     try {
       await new Promise((resolve) => setTimeout(resolve, Math.random() * 2e3 + 1e3));
       let discount = 0;
-      let finalPrice = planId === "Lite" ? 10 : 50;
+      let finalPrice = planId === "Lite" ? 10 : 25;
       if (promoCode) {
-        const promoQuery = (0, import_firestore.query)((0, import_firestore.collection)(db, "promos"), (0, import_firestore.where)("code", "==", promoCode.toUpperCase()));
-        const promoSnap = await (0, import_firestore.getDocs)(promoQuery);
-        if (!promoSnap.empty) {
-          const promoData = promoSnap.docs[0].data();
+        const { data: promoData, error: promoError } = await supabase.from("promos").select("*").eq("code", promoCode.toUpperCase()).single();
+        if (!promoError && promoData) {
           discount = promoData.discount || 0;
           finalPrice = Math.max(0, finalPrice * (1 - discount / 100));
-          await (0, import_firestore.addDoc)((0, import_firestore.collection)(db, "promoLogs"), {
+          await supabase.from("promoLogs").insert({
             code: promoCode.toUpperCase(),
             discountPercent: discount,
             plan: planId,
-            timestamp: (0, import_firestore.serverTimestamp)(),
             userId: userId || "anonymous",
             finalPrice,
             orderId
           });
         }
       }
-      await (0, import_firestore.addDoc)((0, import_firestore.collection)(db, "transactions"), {
+      await supabase.from("transactions").insert({
         userId: userId || "anonymous",
         orderId,
         paymentMethod,
         planId,
         amount: finalPrice,
-        status: "verified",
-        timestamp: (0, import_firestore.serverTimestamp)()
+        status: "verified"
       });
       const licenseKey = `AUTH-${planId.toUpperCase()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
       console.log(`[PAYMENT] Verification success for ${orderId}. Plan: ${planId}, Price: ${finalPrice}`);
@@ -196,72 +153,136 @@ async function startServer() {
     if (!domain || !siteKey) return res.status(400).json({ success: false });
     try {
       const cleanDomain = domain.replace(/^(?:https?:\/\/)?(?:www\.)?/i, "").split("/")[0].toLowerCase();
-      const usersSnap = await (0, import_firestore.getDocs)((0, import_firestore.collection)(db, "users"));
-      let recognizedUser = null;
-      for (const userDoc of usersSnap.docs) {
-        const sitesSnap = await (0, import_firestore.getDocs)((0, import_firestore.query)((0, import_firestore.collection)(db, "users", userDoc.id, "sites"), (0, import_firestore.where)("apiKey", "==", siteKey)));
-        if (!sitesSnap.empty) {
-          const siteData = sitesSnap.docs[0].data();
-          const sDomain = siteData.url.replace(/^(?:https?:\/\/)?(?:www\.)?/i, "").split("/")[0].toLowerCase();
+      const { data: sitesData, error: sitesError } = await supabase.from("sites").select("*, users(plan)").eq("apiKey", siteKey);
+      let recognizedUserPlan = null;
+      if (!sitesError && sitesData && sitesData.length > 0) {
+        for (const site of sitesData) {
+          const sDomain = site.url.replace(/^(?:https?:\/\/)?(?:www\.)?/i, "").split("/")[0].toLowerCase();
           if (sDomain === cleanDomain) {
-            recognizedUser = userDoc.data();
+            recognizedUserPlan = site.users?.plan;
             break;
           }
         }
       }
-      if (!recognizedUser) return res.status(403).json({ success: false, message: "Invalid Site Key" });
-      res.json({ success: true, plan: recognizedUser.plan });
+      if (!recognizedUserPlan) return res.status(403).json({ success: false, message: "Invalid Site Key or Domain" });
+      res.json({ success: true, plan: recognizedUserPlan });
     } catch (error) {
+      console.error("Activation error:", error);
       res.status(500).json({ success: false });
     }
   });
-  app.post("/api/auth/reset-password", async (req, res) => {
+  app.post("/api/auth/request-password", async (req, res) => {
     const { email } = req.body;
-    if (!email) return res.status(400).json({ success: false, message: "Email required" });
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email is required" });
+    }
     try {
-      const resetLink = await adminAuth.generatePasswordResetLink(email);
-      await transporter.sendMail({
-        from: '"WP AI Optimizer" <noreply@wpaioptimizer.com>',
-        to: email,
-        subject: "Reset your password for WP AI Optimizer",
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Password Reset Request</h2>
-            <p>We received a request to reset your password for your WP AI Optimizer account.</p>
-            <p>Click the button below to choose a new password:</p>
-            <a href="${resetLink}" style="display: inline-block; padding: 12px 24px; background-color: #0ea5e9; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; margin: 16px 0;">Reset Password</a>
-            <p style="color: #666; font-size: 14px;">If you didn't request this, you can safely ignore this email.</p>
-          </div>
-        `
+      const tempPassword = Math.random().toString(36).substring(2, 10).toUpperCase();
+      const { data: listData, error: listError } = await supabase.auth.admin.listUsers();
+      if (listError) throw listError;
+      const existingAuthUser = listData.users.find((u) => u.email?.toLowerCase() === email.toLowerCase());
+      let userId;
+      if (existingAuthUser) {
+        userId = existingAuthUser.id;
+        const { error: updateError } = await supabase.auth.admin.updateUserById(userId, {
+          password: tempPassword
+        });
+        if (updateError) throw updateError;
+      } else {
+        const { data: createData, error: createError } = await supabase.auth.admin.createUser({
+          email,
+          password: tempPassword,
+          email_confirm: true,
+          user_metadata: { name: email.split("@")[0] }
+        });
+        if (createError) throw createError;
+        userId = createData.user.id;
+      }
+      const { data: dbUser } = await supabase.from("users").select("*").eq("id", userId).maybeSingle();
+      if (!dbUser) {
+        await supabase.from("users").upsert({
+          id: userId,
+          name: email.split("@")[0],
+          email,
+          plan: "None"
+        });
+      }
+      const transporter = import_nodemailer.default.createTransport({
+        host: process.env.SMTP_HOST || "24.199.103.192",
+        port: parseInt(process.env.SMTP_PORT || "465"),
+        secure: true,
+        auth: {
+          user: process.env.SMTP_USER || "noreply@wpaioptimizer.com",
+          pass: process.env.SMTP_PASS || "Cl45pD%DN2o%wnhE"
+        },
+        tls: {
+          rejectUnauthorized: false
+        }
       });
-      res.json({ success: true, message: "Password reset email sent successfully" });
+      const mailOptions = {
+        from: `"WP AI Optimizer Auth" <${process.env.SMTP_USER || "noreply@wpaioptimizer.com"}>`,
+        to: email,
+        subject: "Your WP AI Optimizer Temporary Password / Login Code",
+        text: `Hello,
+
+Your temporary password to log in to WP AI Optimizer is: ${tempPassword}
+
+Please use this password to log in. You can change your password in your profile page after logging in.
+
+Best regards,
+The WP AI Optimizer Team`,
+        html: `<p>Hello,</p><p>Your temporary password to log in to WP AI Optimizer is: <strong>${tempPassword}</strong></p><p>Please use this password to log in. You can change your password in your profile page after logging in.</p><br/><p>Best regards,<br/>The WP AI Optimizer Team</p>`
+      };
+      await transporter.sendMail(mailOptions);
+      res.json({ success: true, message: "Temporary password sent to your email." });
     } catch (error) {
-      console.error("Custom reset password error:", error);
-      res.status(500).json({ success: false, message: error.message || "Failed to send reset email" });
+      console.error("Error in request-password:", error);
+      res.status(500).json({ success: false, message: error.message || "Failed to generate or send password" });
     }
   });
-  app.post("/api/auth/verify-email", async (req, res) => {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ success: false, message: "Email required" });
+  app.post("/api/contact", async (req, res) => {
+    const { websites, email, whatsapp, message } = req.body;
+    if (!email || !whatsapp || !message) {
+      return res.status(400).json({ success: false, message: "Missing required fields" });
+    }
     try {
-      const verificationLink = await adminAuth.generateEmailVerificationLink(email);
-      await transporter.sendMail({
-        from: '"WP AI Optimizer" <noreply@wpaioptimizer.com>',
-        to: email,
-        subject: "Verify your email for WP AI Optimizer",
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Verify Your Email</h2>
-            <p>Welcome to WP AI Optimizer! Please verify your email address to get started.</p>
-            <a href="${verificationLink}" style="display: inline-block; padding: 12px 24px; background-color: #0ea5e9; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; margin: 16px 0;">Verify Email</a>
-            <p style="color: #666; font-size: 14px;">If you didn't sign up for this account, you can safely ignore this email.</p>
-          </div>
-        `
+      const transporter = import_nodemailer.default.createTransport({
+        host: process.env.SMTP_HOST || "24.199.103.192",
+        port: parseInt(process.env.SMTP_PORT || "465"),
+        secure: true,
+        auth: {
+          user: process.env.SMTP_USER || "noreply@wpaioptimizer.com",
+          pass: process.env.SMTP_PASS || "Cl45pD%DN2o%wnhE"
+        },
+        tls: {
+          rejectUnauthorized: false
+        }
       });
-      res.json({ success: true, message: "Verification email sent successfully" });
+      const mailOptions = {
+        from: `"WP AI Optimizer Contact Form" <${process.env.SMTP_USER || "noreply@wpaioptimizer.com"}>`,
+        to: process.env.SMTP_USER || "noreply@wpaioptimizer.com",
+        // Sends the inquiry directly to your inbox
+        subject: `New Enterprise Inquiry from ${email}`,
+        text: `New Enterprise Inquiry:
+
+Email: ${email}
+WhatsApp: ${whatsapp}
+Websites: ${websites}
+
+Message:
+${message}`,
+        html: `<h3>New Enterprise Inquiry</h3>
+               <p><strong>Email:</strong> ${email}</p>
+               <p><strong>WhatsApp:</strong> ${whatsapp}</p>
+               <p><strong>Websites Needed:</strong> ${websites}</p>
+               <p><strong>Message:</strong></p>
+               <p>${message.replace(/\n/g, "<br/>")}</p>`
+      };
+      await transporter.sendMail(mailOptions);
+      res.json({ success: true, message: "Inquiry sent successfully." });
     } catch (error) {
-      console.error("Custom verify email error:", error);
-      res.status(500).json({ success: false, message: error.message || "Failed to send verification email" });
+      console.error("Error in contact form API:", error);
+      res.status(500).json({ success: false, message: error.message || "Failed to send message." });
     }
   });
   if (process.env.NODE_ENV !== "production") {
