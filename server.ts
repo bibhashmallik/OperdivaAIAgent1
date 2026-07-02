@@ -7,6 +7,9 @@ import 'dotenv/config'; // Make sure to load env vars
 import nodemailer from "nodemailer";
 import WebSocket from "ws";
 
+// Polyfill global WebSocket for Node 20 / Supabase compatibility
+(global as any).WebSocket = WebSocket;
+
 // Initialize Supabase Admin (Service Role) for backend operations
 const supabaseUrl = process.env.VITE_SUPABASE_URL || "https://placeholder-project.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-key";
