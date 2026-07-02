@@ -30,9 +30,12 @@ import firebaseConfig from "./firebase-applet-config.json" assert { type: "json"
 if (admin.apps.length === 0) {
   let credential = undefined;
   const keyPath = path.join(process.cwd(), "serviceAccountKey.json.json");
+  console.log("DEBUG: Firebase Admin key path resolved to:", keyPath);
+  console.log("DEBUG: Firebase Admin key file exists:", fs.existsSync(keyPath));
   
   if (fs.existsSync(keyPath)) {
     const serviceAccount = JSON.parse(fs.readFileSync(keyPath, "utf8"));
+    console.log("DEBUG: Service account parsed project ID:", serviceAccount.project_id);
     credential = admin.credential.cert(serviceAccount);
   } else {
     // Fallback if key is missing (e.g. forgot to upload to server)
