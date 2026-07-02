@@ -16,10 +16,10 @@ try {
   
   console.log('Firebase Admin initialized. Testing key validity...');
   
-  // Try to generate a token (this makes a signed assertion)
-  admin.auth().createCustomToken('test-user-123')
-    .then(token => {
-      console.log('🎉 SUCCESS! The key is valid and working correctly!');
+  // Try to list users (this forces a network call to fetch a Google OAuth2 token and validates the signature)
+  admin.auth().listUsers(1)
+    .then(listUsersResult => {
+      console.log('🎉 SUCCESS! The key has been verified online and is fully active!');
       process.exit(0);
     })
     .catch(err => {
