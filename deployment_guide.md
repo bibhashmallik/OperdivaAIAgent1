@@ -101,3 +101,15 @@ systemctl restart lsws
   * Your Node app is running in Development Mode. Delete the pm2 process (`pm2 delete <name>`) and start it again with `NODE_ENV=production`.
 * **[PM2][ERROR] Script not found: /root/dist/server.cjs**:
   * You ran `pm2 start` while inside the `/root` directory. Delete the process, run `cd /home/yourdomain.com/public_html`, and start it again.
+* **invalid_grant: Invalid JWT Signature (Firebase Admin)**:
+  * **Clock Desync:** If your server time differs from Google's servers by even a minute, authorization fails. Step the clock using:
+    ```bash
+    sudo systemctl stop systemd-timesyncd
+    sudo apt-get update && sudo apt-get install -y ntpdate
+    sudo ntpdate pool.ntp.org
+    sudo systemctl start systemd-timesyncd
+    ```
+  * **Corrupted Key (SSH Paste Limit):** If you pasted your service account credentials key over SSH, terminal buffer wrapping can drop characters. Do **NOT** paste the key over SSH. Instead, go to the **CyberPanel File Manager** in your web browser, create/edit the file, and upload/paste the clean JSON directly.
+* **MODULE_NOT_FOUND (Cannot find module 'dotenv/config')**:
+  * Ensure that `dotenv` is included under `dependencies` in your `package.json` file and you have run `npm install` on the server before building the application.
+
