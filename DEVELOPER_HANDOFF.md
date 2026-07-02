@@ -72,10 +72,68 @@
 - **SEO Ready:** Descriptive headers and semantic HTML tags.
 - **Type Safety:** Functional components with TypeScript props/interfaces.
 
-## 9. Deployment Instructions
-1. Run `npm install` to install dependencies.
-2. Run `npm run build` to generate the `dist/` folder.
-3. Upload the contents of `dist/` to any static hosting provider (Vercel, Netlify, Cloudflare Pages, etc.).
+## 9. Deployment Instructions (CyberPanel Server)
+To update the live site, run the following steps in the server terminal:
+1. Navigate to the website directory:
+   ```bash
+   cd /home/wpaioptimizer.com/public_html
+   ```
+2. Pull the latest code (use `-f` or `reset --hard` if untracked credentials files conflict):
+   ```bash
+   git fetch origin
+   git reset --hard origin/main
+   ```
+3. Install dependencies:
+   ```bash
+   npm install
+   ```
+4. Build the production assets (Vite frontend + Node backend):
+   ```bash
+   npm run build
+   ```
+5. Apply correct CyberPanel ownership to prevent 503 errors:
+   ```bash
+   chown -R wpaio5878:wpaio5878 /home/wpaioptimizer.com/public_html
+   ```
+6. Restart application PM2 process and LiteSpeed:
+   ```bash
+   pm2 restart all
+   systemctl restart lsws
+   ```
 
 ---
-*Documentation generated for OperDiva Handoff.*
+
+## 10. CyberPanel Gotchas & Troubleshooting (CRITICAL)
+
+### Port Conflict (503 Service Unavailable)
+- **Problem:** CyberPanel uses port `3000` internally for proxying. If the Node.js application runs on `3000`, it creates an infinite loop or gets blocked.
+- **Solution:** Always verify the application runs on custom port **`3055`** (defined as `PORT = process.env.PORT || 3055` in `server.ts`).
+
+### File Permissions (503 Service Unavailable)
+- **Problem:** Running `npm run build` or `git pull` as `root` user changes file ownership to `root:root`, which blocks the LiteSpeed web server user (`wpaio5878`) from reading the files.
+- **Solution:** Always run the `chown` permission restore after any server builds:
+  ```bash
+  chown -R wpaio5878:wpaio5878 /home/wpaioptimizer.com/public_html
+  ```
+
+### Node.js Version & WebSockets
+- **Problem:** Newer packages (like `@supabase/supabase-js`) require native WebSocket support, which is missing in Node.js 20 and below, causing startup crashes.
+- **Solution:** The server has been upgraded to **Node.js v22**. Ensure the server remains on Node 22+. For backward compatibility, a WebSocket polyfill (using the `ws` package) is registered globally at the top of `server.ts`:
+  ```typescript
+  import WebSocket from "ws";
+  (global as any).WebSocket = WebSocket;
+  ```
+
+### Git Dubious Ownership Warning
+- **Problem:** When logged in as `root`, Git blocks execution inside the CyberPanel user folder because of ownership differences.
+- **Solution:** Configure git to allow safe access:
+  ```bash
+  git config --global --add safe.directory /home/wpaioptimizer.com/public_html
+  ```
+
+### Missing Credentials (.env and serviceAccountKey.json.json)
+- **Problem:** Configuration files containing keys are ignored in `.gitignore` and do not push to GitHub. When deploying to a new server or environment, they must be manually created.
+- **Solution:** Create `/home/wpaioptimizer.com/public_html/.env` and `/home/wpaioptimizer.com/public_html/serviceAccountKey.json.json` manually on the server.
+
+---
+*Documentation updated for WP AI Optimizer.*
